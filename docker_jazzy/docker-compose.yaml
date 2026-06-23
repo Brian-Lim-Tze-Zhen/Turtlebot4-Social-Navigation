@@ -1,0 +1,48 @@
+services:
+  thesis_social_nav:
+    build: .
+    image: thesis-social-nav-jazzy
+    container_name: thesis_social_nav
+    network_mode: host
+    privileged: true
+    shm_size: "4gb"
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - XDG_RUNTIME_DIR=/tmp/runtime-root
+
+      # ROS
+      - ROS_DOMAIN_ID=0
+
+   
+
+      # OpenGL / Intel GPU
+      - LIBGL_ALWAYS_SOFTWARE=0
+      - MESA_LOADER_DRIVER_OVERRIDE=iris
+      - LIBGL_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+
+      # Gazebo Harmonic paths
+      - GZ_SIM_RESOURCE_PATH=/root/thesis_social_navigation_ws/simulation_models/worlds:/root/thesis_social_navigation_ws/simulation_models/temp_models:/root/thesis_social_navigation_ws/simulation_models:/opt/ros/jazzy/share
+      # Gazebo plugins
+      - GZ_SIM_SYSTEM_PLUGIN_PATH=/opt/ros/jazzy/lib
+
+      # Shared libs
+      - LD_LIBRARY_PATH=/opt/ros/jazzy/lib
+
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev/dri:/dev/dri
+      - ../ros2_ws:/root/thesis_social_navigation_ws
+      - ~/.gz:/root/.gz
+      - ~/.gz/fuel:/root/.gz/fuel
+      
+    devices:
+      - /dev/dri:/dev/dri
+
+    group_add:
+      - "44"
+      - "992"
+
+    stdin_open: true
+    tty: true

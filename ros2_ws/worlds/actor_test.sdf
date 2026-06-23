@@ -1,0 +1,58 @@
+<sdf version="1.7">
+  <world name="actor_test">
+
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+    <actor name="person_1">
+      <pose>2 0 1 0 0 0</pose>
+      <skin>
+        <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Actor/3/files/meshes/walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Actor/3/files/meshes/walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+    </actor>
+
+    <actor name="person_2">
+      <pose>3 -1 1 0 0 0</pose>
+      <skin>
+        <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Actor/3/files/meshes/walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Actor/3/files/meshes/walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+    </actor>
+
+  </world>
+</sdf>
