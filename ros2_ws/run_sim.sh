@@ -20,7 +20,12 @@ set -e
 source /opt/ros/jazzy/setup.bash
 source /root/thesis_social_navigation_ws/install/setup.bash
 
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# THESIS FIX: removed RMW_IMPLEMENTATION=rmw_cyclonedds_cpp.
+# CycloneDDS hit "Failed to find a free participant index for domain 0"
+# once Gazebo + Nav2 + RViz + the 5 perception nodes all register as
+# DDS participants simultaneously on domain 0, causing rviz2 to crash
+# on startup (exit code -6). Reverting to the default RMW (FastDDS)
+# avoids this participant-limit issue entirely.
 export ROS_DOMAIN_ID=0
 export ROS_LOCALHOST_ONLY=0
 
@@ -53,10 +58,72 @@ ros2 launch turtlebot4_gz_bringup turtlebot4_gz.launch.py \
   params_file:=/root/thesis_social_navigation_ws/config/social_nav2.yaml \
   gz_args:="-r" &
 
-# Give Gazebo + Nav2 + RViz time to fully come up before starting
-# the perception pipeline, which expects the simulation and TF
-# tree to already be live.
-sleep 15
+# ----------------------------------------------------------------
+# THESIS FIX: wait for /map_server to actually be ACTIVE, then for
+# /map to actually have data, instead of a fixed `sleep 15` guess.
+#
+# Root cause this works around: when Gazebo + Nav2 + RViz all start
+# together (vs. typed one-by-one manually with natural gaps), RViz's
+# /map subscription can connect to map_server's publisher before
+# map_server has published its first (transient-local/latched)
+# message. TRANSIENT_LOCAL only helps late joiners if at least one
+# publish has already happened - if RViz subscribes a moment too
+# early, there is nothing latched yet to deliver, and RViz's Map
+# display is left showing "No map received" with no further retries.
+#
+# Fix: poll map_server's lifecycle state until ACTIVE, then poll
+# /map until a message can actually be echoed, then simply wait
+# (see note below) rather than touching any node's lifecycle state
+# ourselves.
+# ----------------------------------------------------------------
+echo "[run_sim] Waiting for /map_server to become active..."
+for i in $(seq 1 60); do
+  state=$(ros2 lifecycle get /map_server 2>/dev/null | awk '{print $1}')
+  if [ "$state" = "active" ]; then
+    echo "[run_sim] /map_server is active."
+    break
+  fi
+  sleep 1
+done
+
+echo "[run_sim] Waiting for /map to have data..."
+for i in $(seq 1 30); do
+  if timeout 2 ros2 topic echo /map --once > /dev/null 2>&1; then
+    echo "[run_sim] /map has data."
+    break
+  fi
+  sleep 1
+done
+
+# ----------------------------------------------------------------
+# THESIS NOTE: a previous version of this script manually cycled
+# map_server via `ros2 lifecycle set /map_server deactivate/activate`
+# here, to force a fresh publish for any subscriber (e.g. RViz) that
+# might have subscribed just before the first publish.
+#
+# REMOVED: this directly raced against Nav2's own lifecycle_manager,
+# which is simultaneously driving map_server (and every other Nav2
+# node) through its own startup transitions as part of normal
+# bringup. Two actors changing the same node's lifecycle state at
+# once caused lifecycle_manager to lose the race ("Failed to change
+# state for node: map_server"), which made it abort bringing up
+# every other node in that manager's list (controller_server,
+# planner_server, bt_navigator, behavior_server, etc.) - explaining
+# why Nav2 goals were being rejected even though the map itself
+# displayed correctly afterward.
+#
+# Instead: just wait for the map data check above to succeed, then
+# give the lifecycle managers extra uninterrupted time to finish
+# their own bringup before anything else touches the graph.
+# ----------------------------------------------------------------
+echo "[run_sim] Giving Nav2 lifecycle managers time to finish bringup..."
+sleep 8
+
+# A little extra settle time before starting the perception pipeline.
+# This also helps avoid "Lookup would require extrapolation into the
+# past" TF warnings seen when perception nodes start querying
+# map->camera transforms before TF has buffered enough history yet.
+sleep 5
 
 # ----------------------------------------------------------------
 # Social perception pipeline (separate nodes, run after sim is up)

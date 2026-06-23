@@ -48,6 +48,7 @@ RUN mkdir -p /root/.gz/fuel && \
 # ---------------------------------------------------
 RUN apt update && apt install -y \
     ros-jazzy-nav2-bringup \
+    ros-jazzy-nonpersistent-voxel-layer \
     ros-jazzy-ros-gz \
     ros-jazzy-ros-gz-bridge \
     ros-jazzy-ros-gz-sim \
