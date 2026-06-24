@@ -24,16 +24,12 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'camera_viewer = social_perception.camera_viewer:main',
             'yolo_detector = social_perception.yolo_detector:main',
             'move_person_gazebo = social_perception.move_person_gazebo:main',
             'move_person_gazebo2 = social_perception.move_person_gazebo2:main',
             'predicted_person_cloud_node = social_perception.predicted_person_cloud_node:main',
             'human_kf_predictor = social_perception.human_kf_predictor:main',
             'prediction_marker_node = social_perception.prediction_marker_node:main',
-            'persistent_map_kf_node = social_perception.persistent_map_kf_node:main',
-            'yolo_detector_sync = social_perception.yolo_detector_sync:main',
-            'human_kf_predictor_gated = social_perception.human_kf_predictor_gated:main',
         ],
     },
 )

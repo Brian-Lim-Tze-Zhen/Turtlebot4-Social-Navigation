@@ -36,3 +36,6 @@ __pycache__/
 .DS_Store
 *.swp
 output.log
+ros2_ws/.claude/
+ros2_ws/CLAUDE.md
+ros2_ws/debug_notes_2026-06-24.md

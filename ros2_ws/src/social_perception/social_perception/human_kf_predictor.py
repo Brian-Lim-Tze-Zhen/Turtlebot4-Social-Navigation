@@ -57,6 +57,8 @@ class HumanTrackKF:
         ], dtype=float)
 
         self.last_time = timestamp
+        self.last_conf = 1.0  # updated each measurement; used when coasting
+        self.update_count = 0  # suppress velocity prediction during warm-up
 
         # ==========================================================
         # THESIS MODIFICATION (prediction stability fix)
@@ -78,16 +80,27 @@ class HumanTrackKF:
         #   data; revisit if live behavior feels too laggy or still
         #   too jittery.
         # ==========================================================
-        self.smooth_alpha = 0.3
+        self.smooth_alpha = 0.12
         self.vx_filt = None
         self.vy_filt = None
 
     def update(self, meas_x, meas_y, timestamp):
-        dt = timestamp - self.last_time
+        dt_raw = timestamp - self.last_time
+
+        # Reset velocity when the track was lost long enough that the old
+        # state is untrustworthy. Without this, a high velocity from before
+        # the gap persists through the dt clamp below and decays too slowly.
+        if dt_raw > 1.5:
+            self.x[2, 0] = 0.0
+            self.x[3, 0] = 0.0
+            self.vx_filt = None
+            self.vy_filt = None
+            self.P[2, 2] = 5.0
+            self.P[3, 3] = 5.0
+            self.update_count = 0
 
         # Safety clamp for simulation pauses / timing jumps
-        if dt <= 0.0 or dt > 1.0:
-            dt = 0.1
+        dt = dt_raw if 0.0 < dt_raw <= 1.0 else 0.1
 
         self.last_time = timestamp
 
@@ -121,6 +134,8 @@ class HumanTrackKF:
         # multiple times with different horizons does not re-apply
         # smoothing repeatedly or drift the filter state.
         # ==========================================================
+        self.update_count += 1
+
         vx_raw = float(self.x[2, 0])
         vy_raw = float(self.x[3, 0])
 
@@ -128,9 +143,17 @@ class HumanTrackKF:
             self.vx_filt = vx_raw
             self.vy_filt = vy_raw
         else:
-            a = self.smooth_alpha
-            self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
-            self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
+            # If the raw velocity has reversed direction (negative dot product
+            # with the current filtered estimate), reset the EMA immediately
+            # so the predicted sphere doesn't lag behind a direction change.
+            dot = vx_raw * self.vx_filt + vy_raw * self.vy_filt
+            if dot < 0.0:
+                self.vx_filt = vx_raw
+                self.vy_filt = vy_raw
+            else:
+                a = self.smooth_alpha
+                self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
+                self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
 
     def predict_future(self, horizon):
         x = float(self.x[0, 0])
@@ -151,8 +174,21 @@ class HumanTrackKF:
         # velocity on the very first call (vx_filt is None) before
         # any smoothing history exists.
         # ==========================================================
-        vx_pred = self.vx_filt if self.vx_filt is not None else vx
-        vy_pred = self.vy_filt if self.vy_filt is not None else vy
+        # Suppress velocity during warm-up to prevent noisy early depth
+        # readings from sending the predicted sphere flying on first detection.
+        if self.update_count < 5:
+            vx_pred, vy_pred = 0.0, 0.0
+        else:
+            vx_pred = self.vx_filt if self.vx_filt is not None else vx
+            vy_pred = self.vy_filt if self.vy_filt is not None else vy
+
+        # Hard cap at realistic human walking speed (~2 m/s) as a safety net.
+        max_speed = 2.0
+        speed = (vx_pred ** 2 + vy_pred ** 2) ** 0.5
+        if speed > max_speed:
+            scale = max_speed / speed
+            vx_pred *= scale
+            vy_pred *= scale
 
         pred_x = x + vx_pred * horizon
         pred_y = y + vy_pred * horizon
@@ -169,7 +205,8 @@ class HumanKFPredictor(Node):
         # =====================================
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
-        self.declare_parameter("prediction_horizon", 3.0)
+        self.declare_parameter("prediction_horizon", 2.0)
+        self.declare_parameter("coast_timeout", 0.5)
 
         # =====================================
         # Load parameters
@@ -188,6 +225,12 @@ class HumanKFPredictor(Node):
 
         self.prediction_horizon = (
             self.get_parameter("prediction_horizon")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.coast_timeout = (
+            self.get_parameter("coast_timeout")
             .get_parameter_value()
             .double_value
         )
@@ -212,6 +255,10 @@ class HumanKFPredictor(Node):
             self.output_topic,
             10
         )
+
+        # Coast timer: publish predictions for recently-seen tracks even when
+        # detections are absent; prune tracks silent longer than coast_timeout.
+        self.create_timer(0.2, self.coast_callback)
 
         self.get_logger().info("Human KF predictor started")
         self.get_logger().info(f"Input : {self.input_topic}")
@@ -243,14 +290,15 @@ class HumanKFPredictor(Node):
 
         if track_id not in self.tracks:
             self.tracks[track_id] = HumanTrackKF(base_x, base_y, now)
+            self.tracks[track_id].last_conf = conf
             self.get_logger().info(f"Created KF track for id:{track_id}")
             return
 
-        self.tracks[track_id].update(base_x, base_y, now)
+        track = self.tracks[track_id]
+        track.last_conf = conf
+        track.update(base_x, base_y, now)
 
-        x, y, vx, vy, pred_x, pred_y = self.tracks[track_id].predict_future(
-            self.prediction_horizon
-        )
+        x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
 
         out = String()
         out.data = (
@@ -270,6 +318,39 @@ class HumanKFPredictor(Node):
             f"vel=({vx:.2f},{vy:.2f}) "
             f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f})"
         )
+
+    def coast_callback(self):
+        now = self.get_ros_time_seconds()
+        stale_ids = []
+
+        for track_id, track in self.tracks.items():
+            age = now - track.last_time
+
+            if age >= self.coast_timeout:
+                stale_ids.append(track_id)
+                continue
+
+            # Skip if a measurement just updated this track — the measurement
+            # callback already published, and a 0.2 s timer firing right after
+            # would just duplicate it.
+            if age < 0.1:
+                continue
+
+            x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
+            out = String()
+            out.data = (
+                f"{track_id},"
+                f"{track.last_conf:.2f},"
+                f"{x:.3f},{y:.3f},"
+                f"{vx:.3f},{vy:.3f},"
+                f"{pred_x:.3f},{pred_y:.3f},"
+                f"{self.prediction_horizon:.2f}"
+            )
+            self.pub.publish(out)
+
+        for track_id in stale_ids:
+            self.get_logger().info(f"Pruned stale track id:{track_id}")
+            del self.tracks[track_id]
 
 
 def main(args=None):

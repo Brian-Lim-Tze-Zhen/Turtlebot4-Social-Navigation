@@ -49,8 +49,9 @@ class YoloByteTrackPositionNode(Node):
         self.min_depth_pixels = 20
 
         # Jump rejection in map frame
-        self.last_positions = {}
+        self.last_positions = {}   # track_id -> (x, y, timestamp)
         self.max_jump = 0.8
+        self.jump_timeout = 2.0    # seconds; stale entry skips jump check
 
         self.pub = self.create_publisher(String, "/person_positions_map", 10)
 
@@ -294,34 +295,38 @@ class YoloByteTrackPositionNode(Node):
 
             map_x, map_y, map_z = map_point
 
-            # Reject impossible map-frame jumps for the same ByteTrack ID
+            # Reject impossible map-frame jumps for the same ByteTrack ID.
+            # Skip the check when the stored entry is stale — the person may
+            # have genuinely moved or reappeared from occlusion.
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
             if track_id in self.last_positions:
-                last_x, last_y = self.last_positions[track_id]
-                jump = math.hypot(map_x - last_x, map_y - last_y)
+                last_x, last_y, last_t = self.last_positions[track_id]
+                if now_sec - last_t <= self.jump_timeout:
+                    jump = math.hypot(map_x - last_x, map_y - last_y)
 
-                if jump > self.max_jump:
-                    self.get_logger().warn(
-                        f"Reject jump id:{track_id}, "
-                        f"jump={jump:.2f} m, "
-                        f"new=({map_x:.2f},{map_y:.2f}), "
-                        f"last=({last_x:.2f},{last_y:.2f})"
-                    )
-
-                    if self.show_debug_image:
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(
-                            display_frame,
-                            f"ID:{track_id} rejected jump",
-                            (x1, max(20, y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 0, 255),
-                            2
+                    if jump > self.max_jump:
+                        self.get_logger().warn(
+                            f"Reject jump id:{track_id}, "
+                            f"jump={jump:.2f} m, "
+                            f"new=({map_x:.2f},{map_y:.2f}), "
+                            f"last=({last_x:.2f},{last_y:.2f})"
                         )
 
-                    continue
+                        if self.show_debug_image:
+                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            cv2.putText(
+                                display_frame,
+                                f"ID:{track_id} rejected jump",
+                                (x1, max(20, y1 - 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 0, 255),
+                                2
+                            )
 
-            self.last_positions[track_id] = (map_x, map_y)
+                        continue
+
+            self.last_positions[track_id] = (map_x, map_y, now_sec)
 
             out = String()
             out.data = (

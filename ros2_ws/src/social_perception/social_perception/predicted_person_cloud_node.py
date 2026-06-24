@@ -184,13 +184,23 @@ class PredictedPersonCloudNode(Node):
                 )
             else:
                 heading = math.atan2(dy, dx)
+
+                # Shift the ellipse center forward by `a` along the heading
+                # so its back edge starts exactly at the current position.
+                # This prevents the ellipse from extending behind the person
+                # regardless of their walking speed.
+                a = 1.10
+                b = 0.40
+                ellipse_cx = current_x + a * math.cos(heading)
+                ellipse_cy = current_y + a * math.sin(heading)
+
                 points.extend(
                     self.make_ellipse_points(
-                        predicted_x,
-                        predicted_y,
+                        ellipse_cx,
+                        ellipse_cy,
                         heading=heading,
-                        a=0.80,   # along direction of travel
-                        b=0.40,   # across direction of travel (kept narrow)
+                        a=a,
+                        b=b,
                         spacing=0.15,
                         z=0.3
                     )
