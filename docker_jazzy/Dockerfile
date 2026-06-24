@@ -40,10 +40,19 @@ RUN pip install "setuptools==70.0.0" --break-system-packages
 # 3. Python venv for YOLO / Ultralytics
 #    (kept separate from system Python to avoid
 #    polluting the ROS Python environment)
+#
+#    FIX: setuptools pinned here too, matching the system
+#    pin in section 2. PYTHONPATH below exposes this venv's
+#    site-packages globally, so colcon (a Python program)
+#    would otherwise pick up whichever setuptools "wins" the
+#    PYTHONPATH order -- if they disagree, colcon's behavior
+#    becomes version-dependent on which one shadows the other.
+#    -> notes/setuptools-pin.md
 # -----------------------------------------------------
 RUN apt update && apt install -y python3-venv && \
     python3 -m venv /root/venv && \
     /root/venv/bin/pip install --upgrade pip && \
+    /root/venv/bin/pip install "setuptools==70.0.0" && \
     /root/venv/bin/pip install --no-cache-dir \
         "numpy==1.26.4" \
         ultralytics \
@@ -125,6 +134,36 @@ RUN chmod +x /usr/local/bin/setup_gazebo_worlds.sh
 RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
     echo 'if [ -f /root/thesis_social_navigation_ws/install/setup.bash ]; then source /root/thesis_social_navigation_ws/install/setup.bash; fi' >> /root/.bashrc && \
     echo '/usr/local/bin/setup_gazebo_worlds.sh' >> /root/.bashrc
+
+
+# -----------------------------------------------------
+# 11. FIX: cap CPU thread pools for PyTorch/BLAS
+#     -> notes/yolo-cpu-thread-contention.md
+#
+#     torch.set_num_threads() alone (set in yolo_detector.py)
+#     only limits PyTorch's own intra-op thread pool -- it does
+#     NOT limit the underlying BLAS/OpenMP libraries (MKL,
+#     OpenBLAS) that PyTorch's CPU backend actually calls into
+#     for the heavy matrix-multiply work. Those libraries read
+#     their thread count from environment variables at process
+#     start, before torch.set_num_threads() ever runs in Python,
+#     so the Python-side call alone was insufficient.
+#
+#     Without these caps, YOLO inference (no GPU on this machine)
+#     spawns enough threads to saturate every CPU core, starving
+#     Gazebo's physics loop and Nav2/RViz of CPU time. Confirmed
+#     empirically: real_time_factor dropped to ~0.07-0.3 with
+#     YOLO running uncapped, vs. a stable ~1.0 with Gazebo's GUI
+#     disabled and no YOLO running at all (see notes file).
+#
+#     Values of 2 are a starting point, not a proven optimum --
+#     re-tune against your actual hardware/workload if YOLO
+#     inference itself feels too slow with this cap in place.
+# -----------------------------------------------------
+RUN echo 'export OMP_NUM_THREADS=2' >> /root/.bashrc && \
+    echo 'export MKL_NUM_THREADS=2' >> /root/.bashrc && \
+    echo 'export OPENBLAS_NUM_THREADS=2' >> /root/.bashrc && \
+    echo 'export NUMEXPR_NUM_THREADS=2' >> /root/.bashrc
 
 
 # -----------------------------------------------------

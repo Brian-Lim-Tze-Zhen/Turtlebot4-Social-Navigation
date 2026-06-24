@@ -4,6 +4,9 @@ import math
 import cv2
 import numpy as np
 
+import torch
+torch.set_num_threads(2)  # or 1 — start low and measure
+
 import rclpy
 from rclpy.node import Node
 

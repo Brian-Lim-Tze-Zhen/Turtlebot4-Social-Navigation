@@ -99,3 +99,47 @@ Summary: 1 package finished [0.82s]
   troublesome to maintain across rebuilds, falling back to plain
   `colcon build` (no symlink) is a safe, fully functional alternative
   — it just means rebuilding after each Python source edit.
+
+## Update: the pin must be applied in BOTH Python environments
+
+This image has two separate Python installs: the system Python (where
+`colcon`/ROS live) and a venv at `/root/venv` (for Ultralytics/YOLO).
+The Dockerfile also sets:
+
+```dockerfile
+ENV PYTHONPATH=/root/venv/lib/python3.12/site-packages:$PYTHONPATH
+```
+
+so that ROS nodes can `import ultralytics`/`torch` without manually
+activating the venv. This has a side effect: `PYTHONPATH` is global to
+*every* Python process in the container, including `colcon` itself —
+not just your ROS nodes. So even though `colcon` is invoked from the
+system Python, its `import setuptools` can resolve to the venv's copy
+of setuptools instead of the system one, depending on `PYTHONPATH`
+search order.
+
+Symptom this caused in practice: the system setuptools was correctly
+pinned to `70.0.0`, but the venv's setuptools had been left at
+whatever version `pip install --upgrade pip` happened to pull in
+(`81.0.0` at the time). `colcon build --symlink-install` then failed
+with the familiar `error: option --editable not recognized` —
+*despite* the system pin being correctly in place — because it was
+actually seeing the venv's unpinned, too-new setuptools.
+
+**Fix:** pin setuptools in the venv too, immediately after creating it,
+so both Python environments agree on the same version regardless of
+which one `PYTHONPATH` exposes first:
+
+```dockerfile
+RUN python3 -m venv /root/venv && \
+    /root/venv/bin/pip install --upgrade pip && \
+    /root/venv/bin/pip install "setuptools==70.0.0" && \
+    /root/venv/bin/pip install --no-cache-dir ultralytics ...
+```
+
+**Diagnostic tip for next time:** if `colcon build --symlink-install`
+fails even though `pip show setuptools` (system) reports the correct
+pinned version, check whether `pip show setuptools` reports a
+different `Location` than expected (e.g. `/root/venv/...` instead of
+`/usr/local/lib/...`) — that mismatch is the signature of this exact
+`PYTHONPATH` shadowing issue, not a re-broken pin.
