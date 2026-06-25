@@ -61,6 +61,28 @@ RUN apt update && apt install -y python3-venv && \
 # Make ROS use venv packages
 ENV PYTHONPATH=/root/venv/lib/python3.12/site-packages:$PYTHONPATH
 
+# -----------------------------------------------------
+# 3b. MobileCLIP-S1 (via open_clip) for group-formation
+#     facing-direction confirmation
+#     -> see classify_facing() in group_formation_detector.py
+#
+#     Installed into the SAME venv as YOLO/Ultralytics.
+#
+#     FIX: pre-download the checkpoint at BUILD time, not
+#     runtime. /root is not bind-mounted to the host (only
+#     ros2_ws is), so any cache written at container runtime
+#     is lost on every image rebuild -- without this, every
+#     rebuild would silently re-trigger a ~340MB download the
+#     first time classify_facing() loads the model. Mirrors
+#     the existing Gazebo Fuel pre-download pattern in section 4.
+# -----------------------------------------------------
+RUN /root/venv/bin/pip install --no-cache-dir open_clip_torch && \
+    /root/venv/bin/python3 -c "\
+import open_clip; \
+open_clip.create_model_and_transforms('MobileCLIP-S1', pretrained='datacompdr'); \
+print('MobileCLIP-S1 checkpoint cached at build time.')"
+
+
 
 # -----------------------------------------------------
 # 4. Pre-download Gazebo Fuel models
