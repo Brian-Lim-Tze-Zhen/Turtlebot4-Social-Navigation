@@ -331,6 +331,11 @@ class YoloByteTrackPositionNode(Node):
 
             self.last_positions[track_id] = (map_x, map_y, now_sec)
 
+            # THESIS ADDITION (group formation support): append the pixel
+            # bbox corners as trailing fields. x1,y1,x2,y2 are already in
+            # scope from this loop's xyxy.astype(int) above. Old consumers
+            # parsing only the first 7 fields are unaffected since the
+            # existing fields keep their original order/meaning.
             out = String()
             out.data = (
                 f"{track_id},"
@@ -339,7 +344,11 @@ class YoloByteTrackPositionNode(Node):
                 f"{map_y:.3f},"
                 f"{depth:.3f},"
                 f"{u},"
-                f"{v}"
+                f"{v},"
+                f"{x1},"
+                f"{y1},"
+                f"{x2},"
+                f"{y2}"
             )
             self.pub.publish(out)
 
