@@ -58,7 +58,7 @@
 
     <model name="person_1">
       <static>true</static>
-      <pose>3 0 0 0 0 -1.5</pose>
+      <pose>2.5 0.6 0 0 0 0.0</pose>
 
       <link name="body">
 
@@ -85,7 +85,7 @@
 
     <model name="person_2">
           <static>true</static>
-          <pose>6 2 0 0 0 1.5</pose>
+          <pose>2.5 -0.6 0 0 0 3.1</pose>
 
           <link name="body">
 
