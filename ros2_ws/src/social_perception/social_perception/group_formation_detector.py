@@ -216,6 +216,16 @@ class GroupFormationDetector(Node):
         # frame when no ambiguous pair currently needs it.
         self.latest_frame = msg
 
+        # TEMP DEBUG: save the full raw frame every 30th callback so we
+        # can inspect the camera's actual vertical field of view.
+        if not hasattr(self, '_debug_frame_counter'):
+            self._debug_frame_counter = 0
+        self._debug_frame_counter += 1
+        if self._debug_frame_counter % 30 == 0:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            import cv2
+            cv2.imwrite("/root/thesis_social_navigation_ws/debug_full_frame.png", frame)
+
     def position_callback(self, msg):
         now = self.get_ros_time_seconds()
         parts = msg.data.split(",")
@@ -433,6 +443,7 @@ class GroupFormationDetector(Node):
 
         crop_rgb = crop[:, :, ::-1]
         pil_image = Image.fromarray(crop_rgb)
+        pil_image.save("/root/thesis_social_navigation_ws/debug_clip_crop.png")  # TEMP DEBUG
         image_input = self.clip_preprocess(pil_image).unsqueeze(0)
 
         with torch.no_grad():
