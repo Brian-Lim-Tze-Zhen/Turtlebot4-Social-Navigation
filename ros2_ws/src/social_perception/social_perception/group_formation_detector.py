@@ -97,10 +97,14 @@ WHAT THIS FILE DOES NOT DO YET
 import math
 import itertools
 
+import open_clip
+import torch
+from PIL import Image
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image as RosImage
 from cv_bridge import CvBridge
 
 
@@ -164,12 +168,29 @@ class GroupFormationDetector(Node):
         self.bridge = CvBridge()
         self.latest_frame = None  # most recent raw RGB frame, for VLM cropping
 
+        self.get_logger().info("Loading MobileCLIP-S1...")
+        self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
+            'MobileCLIP-S1', pretrained='datacompdr'
+        )
+        self.clip_model.eval()
+        self.clip_tokenizer = open_clip.get_tokenizer('MobileCLIP-S1')
+        self.clip_prompts = [
+            "two people facing each other talking",
+            "two people standing back to back",
+            "two people standing apart not interacting",
+        ]
+        self.clip_text_tokens = self.clip_tokenizer(self.clip_prompts)
+        with torch.no_grad():
+            text_features = self.clip_model.encode_text(self.clip_text_tokens)
+            self.clip_text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        self.get_logger().info("MobileCLIP-S1 loaded.")
+
         self.sub = self.create_subscription(
             String, self.input_topic, self.position_callback, 10
         )
 
         if ENABLE_VLM_CONFIRMATION:
-            self.create_subscription(Image, RGB_TOPIC, self.image_callback, 10)
+            self.create_subscription(RosImage, RGB_TOPIC, self.image_callback, 10)
 
         self.pub = self.create_publisher(String, self.output_topic, 10)
 
@@ -403,28 +424,34 @@ class GroupFormationDetector(Node):
     # -------------------------------------------------------------
     def classify_facing(self, ta, tb):
         if ta.bbox is None or tb.bbox is None or self.latest_frame is None:
-            return None  # no fresh crop available this cycle
+            return None
 
-        # --- Real implementation sketch (uncomment/adapt once MobileCLIP is set up) ---
-        # frame = self.bridge.imgmsg_to_cv2(self.latest_frame, desired_encoding="bgr8")
-        # crop = self._crop_union(frame, ta.bbox, tb.bbox, pad=20)
-        # if crop is None:
-        #     return None
-        # prompts = [
-        #     "two people facing each other talking",
-        #     "two people standing back to back",
-        #     "two people standing apart not interacting",
-        # ]
-        # best_idx, best_score = self.mobileclip_classify(crop, prompts)
-        # if best_score < VLM_MIN_CONFIDENCE:
-        #     return None
-        # return best_idx == 0
+        frame = self.bridge.imgmsg_to_cv2(self.latest_frame, desired_encoding="bgr8")
+        crop = self._crop_union(frame, ta.bbox, tb.bbox, pad=20)
+        if crop is None:
+            return None
 
-        self.get_logger().warn(
-            "classify_facing() stub called - MobileCLIP not yet wired in. "
-            "Returning None (inconclusive) so no group is falsely confirmed."
+        crop_rgb = crop[:, :, ::-1]
+        pil_image = Image.fromarray(crop_rgb)
+        image_input = self.clip_preprocess(pil_image).unsqueeze(0)
+
+        with torch.no_grad():
+            image_features = self.clip_model.encode_image(image_input)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            similarities = (100.0 * image_features @ self.clip_text_features.T).softmax(dim=-1)
+
+        best_idx = int(similarities.argmax())
+        best_score = float(similarities[0, best_idx])
+
+        self.get_logger().info(
+            f"classify_facing: best='{self.clip_prompts[best_idx]}' "
+            f"score={best_score:.3f}"
         )
-        return None
+
+        if best_score < VLM_MIN_CONFIDENCE:
+            return None
+
+        return best_idx == 0
 
     @staticmethod
     def _crop_union(frame, bbox_a, bbox_b, pad=20):
