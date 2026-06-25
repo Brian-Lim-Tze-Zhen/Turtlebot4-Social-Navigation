@@ -60,6 +60,13 @@ class HumanTrackKF:
         self.last_conf = 1.0  # updated each measurement; used when coasting
         self.update_count = 0  # suppress velocity prediction during warm-up
 
+        # THESIS ADDITION (group formation support): most recent pixel
+        # bbox from yolo_detector.py, side-channeled through for
+        # group_formation_detector.py's MobileCLIP cropping. Not used in
+        # any KF math. Goes stale (use with caution) the longer a track
+        # has been coasting without a fresh detection.
+        self.last_bbox = None
+
         # ==========================================================
         # THESIS MODIFICATION (prediction stability fix)
         #
@@ -282,6 +289,19 @@ class HumanKFPredictor(Node):
             base_x = float(parts[2])
             base_y = float(parts[3])
 
+            # THESIS ADDITION (group formation support): trailing pixel
+            # bbox fields, appended by yolo_detector.py as
+            # ...,depth,u,v,x1,y1,x2,y2 (11 fields total). Default to
+            # None if absent so this stays compatible with any message
+            # that doesn't carry them (e.g. an older recorded bag).
+            if len(parts) >= 11:
+                bbox = (
+                    int(parts[7]), int(parts[8]),
+                    int(parts[9]), int(parts[10]),
+                )
+            else:
+                bbox = None
+
         except Exception as e:
             self.get_logger().warn(
                 f"Could not parse message: {msg.data} | error: {e}"
@@ -291,11 +311,17 @@ class HumanKFPredictor(Node):
         if track_id not in self.tracks:
             self.tracks[track_id] = HumanTrackKF(base_x, base_y, now)
             self.tracks[track_id].last_conf = conf
+            self.tracks[track_id].last_bbox = bbox
             self.get_logger().info(f"Created KF track for id:{track_id}")
             return
 
         track = self.tracks[track_id]
         track.last_conf = conf
+        # THESIS ADDITION (group formation support): keep the most recent
+        # pixel bbox alongside the track, purely as a side-channel for
+        # group_formation_detector.py's cropping — not used anywhere in
+        # the KF math itself.
+        track.last_bbox = bbox
         track.update(base_x, base_y, now)
 
         x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
@@ -307,7 +333,8 @@ class HumanKFPredictor(Node):
             f"{x:.3f},{y:.3f},"
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
-            f"{self.prediction_horizon:.2f}"
+            f"{self.prediction_horizon:.2f},"
+            f"{self._bbox_str(bbox)}"
         )
 
         self.pub.publish(out)
@@ -318,6 +345,16 @@ class HumanKFPredictor(Node):
             f"vel=({vx:.2f},{vy:.2f}) "
             f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f})"
         )
+
+    @staticmethod
+    def _bbox_str(bbox):
+        # THESIS ADDITION (group formation support): serialize bbox as
+        # "x1;y1;x2;y2" (semicolon, not comma, so it doesn't disturb the
+        # outer CSV split) or "none" if unavailable.
+        if bbox is None:
+            return "none"
+        x1, y1, x2, y2 = bbox
+        return f"{x1};{y1};{x2};{y2}"
 
     def coast_callback(self):
         now = self.get_ros_time_seconds()
@@ -344,7 +381,8 @@ class HumanKFPredictor(Node):
                 f"{x:.3f},{y:.3f},"
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
-                f"{self.prediction_horizon:.2f}"
+                f"{self.prediction_horizon:.2f},"
+                f"none"
             )
             self.pub.publish(out)
 
