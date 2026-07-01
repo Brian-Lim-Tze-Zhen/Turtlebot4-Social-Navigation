@@ -1,0 +1,7 @@
+# Generated evaluation outputs — not part of source
+*.png
+*.csv
+*.db3
+*.mcap
+__pycache__/
+*.pyc
