@@ -56,43 +56,32 @@
       </link>
     </model>
 
-    <!-- person_1 is a Gazebo actor: motion is driven by the SDF script
-         (10 s per 2 m leg = 0.2 m/s), eliminating the gz service subprocess
-         and discrete teleport steps used by the old static-model + ROS-node
-         approach.  No walk.dae is available so standing.dae is used as both
-         skin and animation mesh (actor glides, no leg animation).
-         The /model/person_1/pose gz topic is published automatically by the
-         SceneBroadcaster; bridge it with ros_gz_bridge to source ground truth
-         in move_person_gazebo.py. -->
-    <actor name="person_1">
-      <pose>3 0 0 0 0 0</pose>
-      <skin>
-        <filename>model://person_standing/meshes/standing.dae</filename>
-        <scale>1.0</scale>
-      </skin>
-      <animation name="walk">
-        <filename>model://person_standing/meshes/standing.dae</filename>
-        <interpolate_x>true</interpolate_x>
-      </animation>
-      <script>
-        <loop>true</loop>
-        <auto_start>true</auto_start>
-        <trajectory id="0" type="walk">
-          <waypoint>
-            <time>0</time>
-            <pose>3 0 0 0 0 0</pose>
-          </waypoint>
-          <waypoint>
-            <time>10</time>
-            <pose>5 0 0 0 0 3.1416</pose>
-          </waypoint>
-          <waypoint>
-            <time>20</time>
-            <pose>3 0 0 0 0 0</pose>
-          </waypoint>
-        </trajectory>
-      </script>
-    </actor>
+    <model name="person_1">
+      <static>true</static>
+      <pose>3 0 0 0 0 -1.5</pose>
+
+      <link name="body">
+
+        <collision name="collision">
+          <pose>0 0 0.85 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.25</radius>
+              <length>1.5</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>model://person_standing/meshes/standing.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+
+      </link>
+    </model>
 
     <model name="wall_1">
       <pose>3 5 1 0 0 0</pose>
