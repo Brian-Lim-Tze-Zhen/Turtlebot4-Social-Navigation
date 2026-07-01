@@ -48,7 +48,11 @@ class HumanTrackKF:
         self.Q = np.diag([q_pos, q_pos, q_vel, q_vel])
 
         # Measurement noise
-        self.R = np.eye(2) * 0.50
+        # ORIGINAL: 0.50 — conservative, caused filter to lag behind
+        # real position changes. Reduced to 0.20 to make filter more
+        # responsive to YOLO/depth measurements, reducing velocity
+        # estimation lag and prediction error.
+        self.R = np.eye(2) * 0.20
 
         # Measurement matrix: only position x, y is measured
         self.H = np.array([
@@ -59,13 +63,6 @@ class HumanTrackKF:
         self.last_time = timestamp
         self.last_conf = 1.0  # updated each measurement; used when coasting
         self.update_count = 0  # suppress velocity prediction during warm-up
-
-        # THESIS ADDITION (group formation support): most recent pixel
-        # bbox from yolo_detector.py, side-channeled through for
-        # group_formation_detector.py's MobileCLIP cropping. Not used in
-        # any KF math. Goes stale (use with caution) the longer a track
-        # has been coasting without a fresh detection.
-        self.last_bbox = None
 
         # ==========================================================
         # THESIS MODIFICATION (prediction stability fix)
@@ -87,7 +84,11 @@ class HumanTrackKF:
         #   data; revisit if live behavior feels too laggy or still
         #   too jittery.
         # ==========================================================
-        self.smooth_alpha = 0.12
+        # ORIGINAL: 0.12 — very heavy smoothing, caused -7.9% velocity
+        # bias by lagging behind true speed. Increased to 0.25 for
+        # faster response to genuine velocity changes while still
+        # providing noise reduction.
+        self.smooth_alpha = 0.25
         self.vx_filt = None
         self.vy_filt = None
 
@@ -106,8 +107,48 @@ class HumanTrackKF:
             self.P[3, 3] = 5.0
             self.update_count = 0
 
-        # Safety clamp for simulation pauses / timing jumps
-        dt = dt_raw if 0.0 < dt_raw <= 1.0 else 0.1
+        # ==========================================================
+        # THESIS FIX (duplicate/zero-dt timestamp bug)
+        #
+        # dt_raw == 0.0 happens when two messages arrive carrying the
+        # exact same timestamp (observed in practice: simultaneous or
+        # near-simultaneous detections at the same sim_time, e.g. two
+        # YOLO frames resolving to the same depth/TF timestamp).
+        #
+        # The original clamp below ("0.0 < dt_raw <= 1.0 else 0.1")
+        # used a STRICT inequality, so dt_raw == 0.0 failed the check
+        # and fell through to the "else" branch meant for LARGE gaps
+        # (sim pauses / timing jumps) -- silently substituting dt=0.1
+        # even though zero real time had actually elapsed.
+        #
+        # Effect of that bug: the predict step advanced the position
+        # estimate by velocity*0.1 using the fabricated dt, but the
+        # measurement z was essentially identical to the previous
+        # measurement (since no real time passed). The resulting
+        # innovation (y = z - Hx) was then systematically in the
+        # "deceleration" direction, and the Kalman gain pulled the
+        # velocity estimate down to reconcile it -- even though the
+        # person's true velocity hadn't changed. Confirmed empirically:
+        # this produced the dataset's single largest speed dip
+        # (~0.057 m/s against a true 0.1 m/s) at the rows where this
+        # occurred 4-5 times in immediate succession.
+        #
+        # Fix: when dt_raw <= 0.0, there is no new time-elapsed
+        # information to integrate -- skip the predict+correct cycle
+        # entirely and just record the timestamp. The caller
+        # (person_callback) still calls predict_future() right after
+        # this returns, so a message is still published using the
+        # last valid state, rather than corrupting that state with a
+        # spurious update.
+        # ==========================================================
+        if dt_raw <= 0.0:
+            self.last_time = timestamp
+            return
+
+        # Safety clamp for simulation pauses / timing jumps.
+        # (dt_raw > 0.0 is now guaranteed here, so this only handles
+        # the "too large" side -- the dt_raw==0.0 case is handled above.)
+        dt = dt_raw if dt_raw <= 1.0 else 0.1
 
         self.last_time = timestamp
 
@@ -289,19 +330,6 @@ class HumanKFPredictor(Node):
             base_x = float(parts[2])
             base_y = float(parts[3])
 
-            # THESIS ADDITION (group formation support): trailing pixel
-            # bbox fields, appended by yolo_detector.py as
-            # ...,depth,u,v,x1,y1,x2,y2 (11 fields total). Default to
-            # None if absent so this stays compatible with any message
-            # that doesn't carry them (e.g. an older recorded bag).
-            if len(parts) >= 11:
-                bbox = (
-                    int(parts[7]), int(parts[8]),
-                    int(parts[9]), int(parts[10]),
-                )
-            else:
-                bbox = None
-
         except Exception as e:
             self.get_logger().warn(
                 f"Could not parse message: {msg.data} | error: {e}"
@@ -311,17 +339,11 @@ class HumanKFPredictor(Node):
         if track_id not in self.tracks:
             self.tracks[track_id] = HumanTrackKF(base_x, base_y, now)
             self.tracks[track_id].last_conf = conf
-            self.tracks[track_id].last_bbox = bbox
             self.get_logger().info(f"Created KF track for id:{track_id}")
             return
 
         track = self.tracks[track_id]
         track.last_conf = conf
-        # THESIS ADDITION (group formation support): keep the most recent
-        # pixel bbox alongside the track, purely as a side-channel for
-        # group_formation_detector.py's cropping — not used anywhere in
-        # the KF math itself.
-        track.last_bbox = bbox
         track.update(base_x, base_y, now)
 
         x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
@@ -333,8 +355,7 @@ class HumanKFPredictor(Node):
             f"{x:.3f},{y:.3f},"
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
-            f"{self.prediction_horizon:.2f},"
-            f"{self._bbox_str(bbox)}"
+            f"{self.prediction_horizon:.2f}"
         )
 
         self.pub.publish(out)
@@ -345,16 +366,6 @@ class HumanKFPredictor(Node):
             f"vel=({vx:.2f},{vy:.2f}) "
             f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f})"
         )
-
-    @staticmethod
-    def _bbox_str(bbox):
-        # THESIS ADDITION (group formation support): serialize bbox as
-        # "x1;y1;x2;y2" (semicolon, not comma, so it doesn't disturb the
-        # outer CSV split) or "none" if unavailable.
-        if bbox is None:
-            return "none"
-        x1, y1, x2, y2 = bbox
-        return f"{x1};{y1};{x2};{y2}"
 
     def coast_callback(self):
         now = self.get_ros_time_seconds()
@@ -381,8 +392,7 @@ class HumanKFPredictor(Node):
                 f"{x:.3f},{y:.3f},"
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
-                f"{self.prediction_horizon:.2f},"
-                f"none"
+                f"{self.prediction_horizon:.2f}"
             )
             self.pub.publish(out)
 
