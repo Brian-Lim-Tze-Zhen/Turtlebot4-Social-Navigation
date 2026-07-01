@@ -120,7 +120,29 @@ class MovePeopleGazebo(Node):
         dt = (now - self.last_time).nanoseconds / 1e9
         self.last_time = now
 
-        dt = max(0.01, min(dt, 0.5))
+        # ==================================================
+        # THESIS FIX (effective-speed halving bug)
+        #
+        # This clamp's ceiling was previously 0.5s, while the timer
+        # itself fires once per self.update_dt (1.0s) under normal
+        # operation. Since step() computes step = speed * dt, clamping
+        # a normal ~1.0s tick down to 0.5s silently applied only HALF
+        # the intended displacement every tick -- turning the
+        # configured speed=0.2 m/s into an effective 0.1 m/s on every
+        # single normal-operating tick, not just during genuine lag.
+        #
+        # Confirmed empirically: ground-truth logging showed a clean,
+        # near-zero-variance 0.1 m/s (exactly half of 0.2), consistent
+        # with this clamp firing every tick rather than only during
+        # real stalls.
+        #
+        # Fix: raise the ceiling comfortably above update_dt, so the
+        # clamp still does its job (catching a genuinely stalled/
+        # paused callback that fires much later than scheduled) without
+        # throttling normal-rate ticks. 3x update_dt gives real margin
+        # for jitter while still catching multi-second stalls.
+        # ==================================================
+        dt = max(0.01, min(dt, self.update_dt * 3.0))
 
         for person in self.people:
             result = person.step(dt)
