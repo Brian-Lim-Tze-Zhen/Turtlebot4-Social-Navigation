@@ -21,7 +21,22 @@ class MovePersonGazebo(Node):
         self.point_b = (5.0, 0.0, 0.0)
 
         self.speed = 0.2          # m/s
-        self.update_dt = 0.5     # seconds
+        self.update_dt = 0.5      # seconds
+
+        # ==================================================
+        # THESIS ADDITION (endpoint pause)
+        #
+        # Person pauses at each endpoint before reversing.
+        # This gives the KF time to register near-zero velocity
+        # before the direction flip, reducing the reversal error
+        # spike. Also more realistic — people briefly stop before
+        # changing direction.
+        #
+        # pause_duration: how long to hold position at endpoint (s)
+        # pause_timer:    counts down remaining pause time
+        # ==================================================
+        self.pause_duration = 1.5  # seconds
+        self.pause_timer = 0.0     # 0 = not currently pausing
 
         self.current_x = self.point_a[0]
         self.current_y = self.point_a[1]
@@ -32,22 +47,6 @@ class MovePersonGazebo(Node):
         self.timer = self.create_timer(self.update_dt, self.timer_callback)
         self.last_time = self.get_clock().now()
 
-        # ==================================================
-        # THESIS ADDITION (ground-truth logging, ported from
-        # move_person_gazebo2.py)
-        #
-        # Publishes the exact simulated x,y of person_1 on a
-        # PoseArray (single-element, to keep the message format
-        # consistent with the two-person version so existing
-        # logging/analysis scripts - kf_prediction_logger.py,
-        # plot_kf_log.py, compare_true_vs_filtered_speed.py - work
-        # unchanged against a single-person run).
-        #
-        # This does NOT feed into navigation in any way - it's a
-        # read-only "ground truth" feed for offline evaluation,
-        # entirely separate from the camera/lidar perception path
-        # the robot actually uses to sense the person.
-        # ==================================================
         self.ground_truth_pub = self.create_publisher(
             PoseArray,
             "/person_ground_truth",
@@ -55,41 +54,33 @@ class MovePersonGazebo(Node):
         )
         self.frame_id = "map"
 
-        self.get_logger().debug("Moving person_1 using Gazebo set_pose service")
-        self.get_logger().debug(f"World: {self.world_name}")
-        self.get_logger().debug(f"Model: {self.model_name}")
-  
+        self.get_logger().info("Moving person_1 using Gazebo set_pose service")
+        self.get_logger().info(f"World: {self.world_name}")
+        self.get_logger().info(f"Endpoints: {self.point_a} <-> {self.point_b}")
+        self.get_logger().info(f"Speed: {self.speed} m/s, pause: {self.pause_duration}s at endpoints")
 
     def timer_callback(self):
         now = self.get_clock().now()
         dt = (now - self.last_time).nanoseconds / 1e9
         self.last_time = now
 
-        # ==================================================
-        # THESIS FIX (effective-speed halving bug)
-        #
-        # The previous ceiling here was 0.5s. At the time this bug was
-        # found, self.update_dt was 1.0s, and the timer fired once per
-        # update_dt under normal operation - so a normal ~1.0s tick was
-        # being clamped down to 0.5s, silently applying only HALF the
-        # intended displacement on every single tick (turning the
-        # configured speed=0.2 m/s into an effective 0.1 m/s under
-        # completely normal conditions, not just during genuine lag/
-        # pause events, which is what this clamp was actually meant to
-        # guard against - see the original comment below).
-        #
-        # NOTE: self.update_dt has since been tuned down from 1.0s to
-        # smooth out the person's motion (see its definition above) -
-        # the fix below scales with whatever self.update_dt currently
-        # is, so it remains correct regardless of that value.
-        #
-        # Fix: raise the ceiling comfortably above update_dt (3x),
-        # so a genuinely stalled callback (e.g. sim pause, multi-
-        # second lag) still gets its dt capped and doesn't produce a
-        # huge teleport jump, but a normal on-schedule tick is no
-        # longer clamped at all.
-        # ==================================================
         dt = max(0.01, min(dt, self.update_dt * 3.0))
+
+        # ==================================================
+        # Endpoint pause logic:
+        # When pause_timer > 0, the person is stationary at
+        # the endpoint. Publish ground truth (position valid)
+        # but send no new set_pose and do no movement. Tick
+        # the timer down by dt each callback.
+        # ==================================================
+        if self.pause_timer > 0.0:
+            self.pause_timer = max(0.0, self.pause_timer - dt)
+            self.get_logger().info(
+                f"Pausing at ({self.current_x:.2f},{self.current_y:.2f}) "
+                f"— {self.pause_timer:.2f}s remaining"
+            )
+            self.publish_ground_truth()
+            return
 
         target_x, target_y, target_z = self.target
 
@@ -99,22 +90,20 @@ class MovePersonGazebo(Node):
         dist = math.sqrt(dx * dx + dy * dy)
 
         if dist < 0.05:
+            # Reached endpoint — start pause before switching target
+            self.pause_timer = self.pause_duration
             if self.target == self.point_b:
                 self.target = self.point_a
             else:
                 self.target = self.point_b
-
-            self.get_logger().info(f"Switching target to {self.target}")
-            # Still publish ground truth on this tick - the person's
-            # position is valid/current even though no new set_pose
-            # call is being sent this tick (only the target changed).
+            self.get_logger().info(
+                f"Reached endpoint, pausing {self.pause_duration}s "
+                f"then switching to {self.target}"
+            )
             self.publish_ground_truth()
             return
 
-        step = self.speed * dt
-
-        # Avoid overshooting the target
-        step = min(step, dist)
+        step = min(self.speed * dt, dist)
 
         ux = dx / dist
         uy = dy / dist
@@ -127,8 +116,11 @@ class MovePersonGazebo(Node):
             f"pos=({self.current_x:.2f},{self.current_y:.2f}) "
             f"target={self.target}"
         )
-        # Face movement direction
-        yaw = math.atan2(uy, ux)
+
+        # THESIS FIX: +pi/2 yaw offset so model faces direction of travel.
+        # Verified: x 3->5 => yaw=+pi/2, x 5->3 => yaw=-pi/2
+        yaw = math.atan2(uy, ux) + math.pi / 2.0
+        yaw = math.atan2(math.sin(yaw), math.cos(yaw))
 
         threading.Thread(
             target=self.set_model_pose,
@@ -180,10 +172,8 @@ class MovePersonGazebo(Node):
                 text=True,
                 timeout=6.0
             )
-
             if result.returncode != 0:
                 self.get_logger().warn(f"set_pose failed: {result.stderr}")
-
         except subprocess.TimeoutExpired:
             self.get_logger().warn("set_pose service timeout")
 
@@ -194,14 +184,11 @@ class MovePersonGazebo(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-
     node = MovePersonGazebo()
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-
     node.destroy_node()
     rclpy.shutdown()
 

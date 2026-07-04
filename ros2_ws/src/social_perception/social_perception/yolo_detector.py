@@ -34,7 +34,7 @@ class YoloByteTrackPositionNode(Node):
         self.camera_frame = "oakd_rgb_camera_optical_frame"
         self.target_frame = "map"
 
-        self.model = YOLO("/root/thesis_social_navigation_ws/yolov8s.pt")
+        self.model = YOLO("/root/thesis_social_navigation_ws/models/yolov8s.pt")
 
         self.frame_count = 0
         self.process_every_n_frames = 2
@@ -48,8 +48,8 @@ class YoloByteTrackPositionNode(Node):
 
         # Depth filtering
         self.min_depth = 0.2
-        self.max_depth = 5.0
-        self.min_depth_pixels = 20
+        self.max_depth = 6.0
+        self.min_depth_pixels = 50
 
         # Jump rejection in map frame
         self.last_positions = {}   # track_id -> (x, y, timestamp)

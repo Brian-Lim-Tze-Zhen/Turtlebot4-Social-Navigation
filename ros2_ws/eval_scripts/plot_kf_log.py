@@ -90,31 +90,68 @@ def main():
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle(f"Track {track_id}")
 
-        # --- Trajectory ---
-        axes[0].plot(g_plot["x"], g_plot["y"], "b.-", label="current (filtered)", markersize=4)
-        axes[0].plot(g_plot["pred_x"], g_plot["pred_y"], "r.-", label="predicted (+horizon)", markersize=4)
+        # --- X position over time ---
+        # Consistent colour scheme:
+        #   Current filtered pos -> Blue   #2196F3
+        #   Predicted position   -> Orange #FF6F00
+        #   Ground truth         -> Black  #000000
+        axes[0].plot(
+            g_plot["t"], g_plot["x"],
+            color="#2196F3", marker=".", linestyle="-",
+            label="current filtered x",
+            markersize=4,
+            linewidth=1.5,
+        )
+
+        axes[0].plot(
+            g_plot["t"], g_plot["pred_x"],
+            color="#FF6F00", marker=".", linestyle="-",
+            label="predicted x (+horizon)",
+            markersize=4,
+            linewidth=1.5,
+        )
 
         if gt is not None:
             for person_index, pg in gt.groupby("person_index"):
                 pg = pg.sort_values("t")
                 axes[0].plot(
-                    pg["x"], pg["y"], "--",
-                    label=f"ground truth (person {person_index})",
-                    linewidth=0.5, alpha=0.3,
+                    pg["t"], pg["x"],
+                    color="#000000", linestyle="--",
+                    label=f"ground truth x (person {person_index})",
+                    linewidth=1.5,
+                    alpha=0.8,
                 )
 
-        axes[0].set_xlabel("x [m]")
-        axes[0].set_ylabel("y [m]")
-        axes[0].set_title("Trajectory")
+        axes[0].set_xlabel("elapsed time [s]")
+        axes[0].set_ylabel("x position [m]")
+        axes[0].set_title("X position over time")
         axes[0].legend(fontsize=8)
-        axes[0].axis("equal")
+        axes[0].grid(True, alpha=0.3)
 
-        # --- Velocity magnitude ---
-        speed = (g_plot["vx"] ** 2 + g_plot["vy"] ** 2) ** 0.5
-        axes[1].plot(g_plot["t"], speed, "g.-", markersize=4)
-        axes[1].set_xlabel("sim time [s]")
-        axes[1].set_ylabel("speed [m/s]")
-        axes[1].set_title("Velocity magnitude")
+        # --- Signed x velocity ---
+        # KF velocity -> Green #2E7D32
+        axes[1].plot(
+            g_plot["t"],
+            g_plot["vx"],
+            color="#2E7D32", marker=".", linestyle="-",
+            markersize=4,
+            linewidth=1.5,
+            label="KF vx"
+        )
+
+        axes[1].axhline(
+            0.0,
+            linestyle="--",
+            linewidth=1.0,
+            color="#000000",
+            label="zero velocity"
+        )
+
+        axes[1].set_xlabel("elapsed time [s]")
+        axes[1].set_ylabel("vx [m/s]")
+        axes[1].set_title("Signed x velocity")
+        axes[1].legend(fontsize=8)
+        axes[1].grid(True, alpha=0.3)
 
         plt.tight_layout()
         out_name = f"track_{track_id}.png"

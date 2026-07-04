@@ -56,7 +56,9 @@ RUN apt update && apt install -y python3-venv && \
     /root/venv/bin/pip install --no-cache-dir \
         "numpy==1.26.4" \
         ultralytics \
-        "lap>=0.5.12"
+        "lap>=0.5.12"\
+        pandas \
+        matplotlib
 
 # Make ROS use venv packages
 ENV PYTHONPATH=/root/venv/lib/python3.12/site-packages:$PYTHONPATH
