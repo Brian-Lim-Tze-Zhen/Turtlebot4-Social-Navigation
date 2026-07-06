@@ -13,7 +13,7 @@ services:
       - XDG_RUNTIME_DIR=/tmp/runtime-root
 
       # ROS
-      - ROS_DOMAIN_ID=0
+      - ROS_DOMAIN_ID=88
 
    
 
