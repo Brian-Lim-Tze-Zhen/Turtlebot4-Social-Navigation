@@ -47,10 +47,9 @@ class YoloByteTrackPositionNode(Node):
         self.cy = None
 
         # Depth filtering
-        self.min_depth = 0.5
+        self.min_depth = 0.2
         self.max_depth = 7.0
-        self.min_depth_pixels = 50
-
+        self.min_depth_pixels = 100
         # Jump rejection in map frame
         self.last_positions = {}   # track_id -> (x, y, timestamp)
         self.max_jump = 0.8

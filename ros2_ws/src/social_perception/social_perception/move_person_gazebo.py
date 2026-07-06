@@ -18,7 +18,7 @@ class MovePersonGazebo(Node):
 
         # Movement endpoints in Gazebo world frame
         self.point_a = (3.0, 0.0, 0.0)
-        self.point_b = (5.0, 0.0, 0.0)
+        self.point_b = (6.0, 0.0, 0.0)
 
         self.speed = 0.2          # m/s
         self.update_dt = 0.5      # seconds
