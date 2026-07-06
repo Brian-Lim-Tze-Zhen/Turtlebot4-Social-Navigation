@@ -104,6 +104,9 @@ class PredictedPersonCloudNode(Node):
         except ValueError:
             self.get_logger().warn(f"Parse failed: {msg.data}")
             return
+        
+        # Rotation gate flag passed from human_kf_predictor
+        rotation_gated = len(parts) > 9 and parts[9].strip() == "1"
 
         # Compute raw heading from current -> predicted displacement.
         # If displacement is zero (stationary / warm-up), heading is undefined
@@ -151,6 +154,7 @@ class PredictedPersonCloudNode(Node):
             "last_seen": self.get_ros_time_seconds(),
             "heading_sin": s,
             "heading_cos": c,
+            "rotation_gated": rotation_gated,   # <-- add this
         }
 
     def publish_cloud(self):
@@ -186,7 +190,7 @@ class PredictedPersonCloudNode(Node):
                 self.make_disk_points(
                     current_x,
                     current_y,
-                    radius=0.20,
+                    radius=0.30,
                     spacing=0.10,
                     z=0.3
                 )
@@ -249,8 +253,8 @@ class PredictedPersonCloudNode(Node):
                 # so its back edge starts exactly at the current position.
                 # This prevents the ellipse from extending behind the person
                 # regardless of their walking speed.
-                a = 0.80
-                b = 0.15
+                a = 0.7
+                b = 0.20
                 ellipse_cx = predicted_x
                 ellipse_cy = predicted_y
 
@@ -261,7 +265,7 @@ class PredictedPersonCloudNode(Node):
                         heading=heading,
                         a=a,
                         b=b,
-                        spacing=0.18,
+                        spacing=0.15,
                         z=0.3
                     )
                 )

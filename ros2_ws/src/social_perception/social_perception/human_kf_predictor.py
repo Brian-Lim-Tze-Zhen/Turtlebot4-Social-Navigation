@@ -218,7 +218,7 @@ class HumanKFPredictor(Node):
         # =====================================
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
-        self.declare_parameter("prediction_horizon", 2.0)
+        self.declare_parameter("prediction_horizon", 1.0)
         self.declare_parameter("coast_timeout", 0.5)
         self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
 
@@ -373,7 +373,8 @@ class HumanKFPredictor(Node):
             f"{x:.3f},{y:.3f},"
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
-            f"{self.prediction_horizon:.2f}"
+            f"{self.prediction_horizon:.2f},"
+            f"{1 if freeze_velocity else 0}"   # field [9] — rotation gate active
         )
 
         self.pub.publish(out)
@@ -411,7 +412,8 @@ class HumanKFPredictor(Node):
                 f"{x:.3f},{y:.3f},"
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
-                f"{self.prediction_horizon:.2f}"
+                f"{self.prediction_horizon:.2f},"
+                f"0"
             )
             self.pub.publish(out)
 
