@@ -46,9 +46,25 @@ class PredictedPersonCloudNode(Node):
         # or ID was lost) are pruned automatically, so the costmap
         # doesn't keep a phantom obstacle forever.
         # ==========================================================
-        self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen)
-        self.track_timeout = 0.3        # seconds before a silent track is dropped
+        self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen, heading_sin, heading_cos)
+        self.track_timeout = 0.8        # seconds before a silent track is dropped
         self.publish_rate_hz = 10.0   # cloud publish rate, decoupled from detection rate
+
+        # ==========================================================
+        # THESIS MODIFICATION (heading smoothing)
+        #
+        # The ellipse heading was previously recomputed fresh every
+        # tick from atan2(predicted - current). This caused the
+        # ellipse to snap instantly when the person reverses, a noisy
+        # depth reading shifts the predicted point, or ego-motion from
+        # robot rotation contaminates the KF velocity.
+        #
+        # Fix: apply EMA smoothing to the heading using circular mean
+        # interpolation (sin/cos components separately) so the ellipse
+        # rotates gradually rather than snapping. Lower alpha = slower
+        # smoother rotation; higher alpha = faster response.
+        # ==========================================================
+        self.heading_smooth_alpha = 0.40
 
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate_hz,
@@ -89,6 +105,42 @@ class PredictedPersonCloudNode(Node):
             self.get_logger().warn(f"Parse failed: {msg.data}")
             return
 
+        # Compute raw heading from current -> predicted displacement.
+        # If displacement is zero (stationary / warm-up), heading is undefined
+        # so we skip the heading update and keep the last known value.
+        dx = predicted_x - current_x
+        dy = predicted_y - current_y
+        dist = math.hypot(dx, dy)
+
+        existing = self.active_tracks.get(track_id)
+
+        if dist > 0.01:
+            raw_heading = math.atan2(dy, dx)
+            raw_sin = math.sin(raw_heading)
+            raw_cos = math.cos(raw_heading)
+
+            # ==========================================================
+            # THESIS MODIFICATION (heading smoothing)
+            #
+            # EMA on sin/cos components keeps the interpolation on the
+            # unit circle (avoids the discontinuity at ±pi that would
+            # cause the heading to spin the long way around on reversal).
+            # The smoothed heading is recovered via atan2(sin, cos).
+            # ==========================================================
+            if existing is not None and "heading_sin" in existing:
+                a = self.heading_smooth_alpha
+                s = a * raw_sin + (1.0 - a) * existing["heading_sin"]
+                c = a * raw_cos + (1.0 - a) * existing["heading_cos"]
+            else:
+                s, c = raw_sin, raw_cos
+        else:
+            # No displacement — keep last known heading if available
+            if existing is not None and "heading_sin" in existing:
+                s = existing["heading_sin"]
+                c = existing["heading_cos"]
+            else:
+                s, c = 0.0, 1.0  # default: east
+
         # Just record the latest state for this track. Actual cloud
         # construction/publishing happens in publish_cloud() so that
         # all active tracks are represented together, not just the
@@ -97,6 +149,8 @@ class PredictedPersonCloudNode(Node):
             "current": (current_x, current_y),
             "predicted": (predicted_x, predicted_y),
             "last_seen": self.get_ros_time_seconds(),
+            "heading_sin": s,
+            "heading_cos": c,
         }
 
     def publish_cloud(self):
@@ -169,10 +223,18 @@ class PredictedPersonCloudNode(Node):
             # started), heading is undefined, so we fall back to a small
             # symmetric disk for that one cycle.
             # ==========================================================
-            dx = predicted_x - current_x
-            dy = predicted_y - current_y
+            # Use the pre-smoothed heading stored in callback()
+            # instead of recomputing raw atan2 every tick.
+            if "heading_sin" in t:
+                heading = math.atan2(t["heading_sin"], t["heading_cos"])
+                use_ellipse = True
+            else:
+                dx = predicted_x - current_x
+                dy = predicted_y - current_y
+                use_ellipse = (dx != 0.0 or dy != 0.0)
+                heading = math.atan2(dy, dx) if use_ellipse else 0.0
 
-            if dx == 0.0 and dy == 0.0:
+            if not use_ellipse:
                 points.extend(
                     self.make_disk_points(
                         predicted_x,
@@ -183,16 +245,14 @@ class PredictedPersonCloudNode(Node):
                     )
                 )
             else:
-                heading = math.atan2(dy, dx)
-
                 # Shift the ellipse center forward by `a` along the heading
                 # so its back edge starts exactly at the current position.
                 # This prevents the ellipse from extending behind the person
                 # regardless of their walking speed.
-                a = 1.10
-                b = 0.40
-                ellipse_cx = current_x + a * math.cos(heading)
-                ellipse_cy = current_y + a * math.sin(heading)
+                a = 0.80
+                b = 0.15
+                ellipse_cx = predicted_x
+                ellipse_cy = predicted_y
 
                 points.extend(
                     self.make_ellipse_points(
@@ -201,7 +261,7 @@ class PredictedPersonCloudNode(Node):
                         heading=heading,
                         a=a,
                         b=b,
-                        spacing=0.15,
+                        spacing=0.18,
                         z=0.3
                     )
                 )
@@ -216,6 +276,12 @@ class PredictedPersonCloudNode(Node):
                 f"[{ids_str}] points={len(points)}"
             )
 
+
+    def destroy_node(self):
+        empty_cloud = self.create_cloud([], self.frame_id)
+        self.pub.publish(empty_cloud)
+        self.get_logger().info("Published empty cloud to clear costmap on shutdown")
+        super().destroy_node()
     # ==============================================================
     # THESIS MODIFICATION
     #

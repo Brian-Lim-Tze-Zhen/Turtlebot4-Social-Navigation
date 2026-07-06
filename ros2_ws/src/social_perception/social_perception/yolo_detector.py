@@ -47,8 +47,8 @@ class YoloByteTrackPositionNode(Node):
         self.cy = None
 
         # Depth filtering
-        self.min_depth = 0.2
-        self.max_depth = 6.0
+        self.min_depth = 0.5
+        self.max_depth = 7.0
         self.min_depth_pixels = 50
 
         # Jump rejection in map frame
@@ -214,7 +214,7 @@ class YoloByteTrackPositionNode(Node):
             persist=True,
             tracker="bytetrack.yaml",
             classes=[0],
-            conf=0.65,
+            conf=0.75,
             imgsz=320,
             verbose=False
         )
