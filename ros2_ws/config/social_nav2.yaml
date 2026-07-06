@@ -80,6 +80,7 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 1.4
+        # threshold_to_consider: 1.4
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -132,8 +133,10 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
-      width: 3
-      height: 3
+      width: 5
+      # width: 3
+      height: 5
+      # height: 3
       resolution: 0.06
       footprint: "[[ 0.189,  0.000],
                   [ 0.134, -0.134],
@@ -147,7 +150,8 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
+        # cost_scaling_factor: 4.0
+        cost_scaling_factor: 3.0
         inflation_radius: 0.5
 
       voxel_layer:
@@ -236,7 +240,7 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
+        cost_scaling_factor: 4.0 
         inflation_radius: 0.45
       always_send_full_costmap: true
 
@@ -307,8 +311,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [-0.26, 0.0, -1.0]
+    max_velocity: [0.26, 0.0, 1.5] # [0.26, 0.0, 1.0]
+    min_velocity: [-0.26, 0.0, -1.5] # [-0.26, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "odom"
