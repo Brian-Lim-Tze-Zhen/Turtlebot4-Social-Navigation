@@ -45,7 +45,7 @@ class HumanTrackKF:
         # smoothing below.
         # ==========================================================
         q_pos = 0.05
-        q_vel = 0.02
+        q_vel = 0.005
         self.Q = np.diag([q_pos, q_pos, q_vel, q_vel])
 
         # Measurement noise
@@ -218,8 +218,8 @@ class HumanKFPredictor(Node):
         # =====================================
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
-        self.declare_parameter("prediction_horizon", 1.0)
-        self.declare_parameter("coast_timeout", 0.5)
+        self.declare_parameter("prediction_horizon", 3.0)
+        self.declare_parameter("coast_timeout", 1.5)
         self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
 
         # =====================================

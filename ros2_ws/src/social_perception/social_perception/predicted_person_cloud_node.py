@@ -5,6 +5,9 @@ import struct
 
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
+
+import tf2_ros
 
 from std_msgs.msg import String, Header
 from sensor_msgs.msg import PointCloud2, PointField
@@ -66,6 +69,41 @@ class PredictedPersonCloudNode(Node):
         # ==========================================================
         self.heading_smooth_alpha = 0.40
 
+        # ==========================================================
+        # THESIS MODIFICATION (robot keep-out filter)
+        #
+        # In a head-on encounter, the ellipse points directly at the
+        # approaching robot. Once the robot-person gap closes below
+        # the ellipse's forward extent (plus costmap inflation), the
+        # synthetic obstacle points land ON the robot's own footprint.
+        # The robot is then standing inside lethal/high cost created
+        # by its own prediction layer, and the controller can no
+        # longer score a valid forward trajectory -> it oscillates
+        # jerkily between "path blocked" and "path clear" states, or
+        # sinks into the inflation and stalls.
+        #
+        # Fix: before publishing, drop every cloud point that falls
+        # within robot_keepout_radius of the robot's current position
+        # (looked up from TF map->base_link). The radius is chosen to
+        # be just larger than the TurtleBot4 footprint, so lethal
+        # marks can never appear under the robot, while the remaining
+        # ellipse/disk points (and their inflation gradient) still
+        # repel the robot sideways as intended. Making this radius
+        # much larger would carve a moving "hole" through the risk
+        # zone and let the robot push straight through the person's
+        # lane, so keep it footprint-sized.
+        #
+        # If the TF lookup fails on a given cycle (startup, TF lag),
+        # the last known robot position is reused; if none is known
+        # yet, the cloud is published unfiltered (original behavior).
+        # ==========================================================
+        self.robot_frame = "base_link"
+        self.robot_keepout_radius = 0.25
+        self.last_robot_xy = None
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate_hz,
             self.publish_cloud
@@ -78,6 +116,10 @@ class PredictedPersonCloudNode(Node):
         self.get_logger().info(
             f"Track timeout: {self.track_timeout:.2f}s | "
             f"Publish rate: {self.publish_rate_hz:.1f} Hz"
+        )
+        self.get_logger().info(
+            f"Robot keep-out: {self.robot_keepout_radius:.2f} m "
+            f"around frame '{self.robot_frame}'"
         )
 
     def get_ros_time_seconds(self):
@@ -190,7 +232,7 @@ class PredictedPersonCloudNode(Node):
                 self.make_disk_points(
                     current_x,
                     current_y,
-                    radius=0.30,
+                    radius=0.40,
                     spacing=0.10,
                     z=0.3
                 )
@@ -227,9 +269,57 @@ class PredictedPersonCloudNode(Node):
             # started), heading is undefined, so we fall back to a small
             # symmetric disk for that one cycle.
             # ==========================================================
+            # ==========================================================
+            # THESIS MODIFICATION (rotation gate fallback)
+            #
+            # When human_kf_predictor reports the robot is rotating fast
+            # enough to have frozen the velocity EMA (rotation_gated=True),
+            # the heading carried in this track is stale/frozen and should
+            # not be trusted for a directional obstacle right now. Force
+            # the fallback to a symmetric disk instead of the ellipse for
+            # as long as the gate is active, so a frozen-but-possibly-wrong
+            # heading can't point the ellipse into the robot's own escape
+            # route and trap it.
+            #
+            # This check must come before the heading_sin/cos check below,
+            # since a track can have a valid smoothed heading AND be
+            # currently rotation-gated at the same time.
+            # ==========================================================
+            rotation_gated = t.get("rotation_gated", False)
+
+            if rotation_gated:
+                use_ellipse = False
+                # ==========================================================
+                # THESIS MODIFICATION (rotation-gate bias fallback)
+                #
+                # rotation_gated forces the safe symmetric-disk shape
+                # (we still distrust a freshly recomputed heading while
+                # the robot is rotating - ego-motion contaminates the
+                # velocity estimate). But the swerve maneuver itself is
+                # what causes the robot to rotate in the first place, so
+                # gating heading to 0.0 here made the lateral pass-side
+                # bias (below) disappear at exactly the moment it was
+                # needed most - producing a brief left/right hesitation
+                # right at swerve onset, confirmed in testing.
+                #
+                # Fix: reuse the last-smoothed heading from before the
+                # gate activated (callback() keeps updating heading_sin/
+                # heading_cos regardless of the gate) purely to pick
+                # which side to bias the disk toward. This is safe even
+                # if that heading is a cycle or two stale: worst case we
+                # bias toward the wrong side for one fallback cycle,
+                # forfeiting this cycle's early-decision advantage - it
+                # does not create a false-safe gap, since disk radius
+                # and the keep-out filter bound the geometry the same
+                # way regardless of bias direction.
+                # ==========================================================
+                if "heading_sin" in t:
+                    heading = math.atan2(t["heading_sin"], t["heading_cos"])
+                else:
+                    heading = None  # no prior heading yet; skip bias
             # Use the pre-smoothed heading stored in callback()
             # instead of recomputing raw atan2 every tick.
-            if "heading_sin" in t:
+            elif "heading_sin" in t:
                 heading = math.atan2(t["heading_sin"], t["heading_cos"])
                 use_ellipse = True
             else:
@@ -239,24 +329,69 @@ class PredictedPersonCloudNode(Node):
                 heading = math.atan2(dy, dx) if use_ellipse else 0.0
 
             if not use_ellipse:
+                disk_cx = predicted_x
+                disk_cy = predicted_y
+
+                if heading is not None:
+                    lateral_bias = 0.40 # matches ellipse b=0.50 below
+                    disk_cx += lateral_bias * math.sin(heading)
+                    disk_cy += lateral_bias * -math.cos(heading)
+
                 points.extend(
                     self.make_disk_points(
-                        predicted_x,
-                        predicted_y,
-                        radius=0.30,
+                        disk_cx,
+                        disk_cy,
+                        radius=0.40,
                         spacing=0.15,
                         z=0.3
                     )
                 )
             else:
-                # Shift the ellipse center forward by `a` along the heading
-                # so its back edge starts exactly at the current position.
-                # This prevents the ellipse from extending behind the person
-                # regardless of their walking speed.
-                a = 0.7
-                b = 0.20
+                # Ellipse is centered directly on the predicted position
+                # (current + smoothed velocity * horizon). No forward
+                # shift is applied here; the "shift forward by a" this
+                # comment used to describe is stale and no longer reflects
+                # this code.
+                a = 1.10
+                b = 0.40
                 ellipse_cx = predicted_x
                 ellipse_cy = predicted_y
+
+                # ==========================================================
+                # THESIS MODIFICATION (head-on symmetry break / pass-right bias)
+                #
+                # A perfectly head-on approach (person's heading points
+                # straight at the robot) makes the ellipse symmetric
+                # left-right around the heading axis, giving MPPI's cost
+                # gradient no directional preference. Observed in testing:
+                # visible hesitation/wobbling and a late, close-range
+                # (<0.3 m) avoidance decision, since the optimizer had to
+                # wait on sampling noise to break the tie.
+                #
+                # Fix: shift the ellipse center slightly perpendicular to
+                # heading, consistently to one side (social "keep right"
+                # convention, matching pedestrian/traffic norms). This
+                # breaks left/right symmetry deterministically and early,
+                # so MPPI resolves the pass-side decision well before the
+                # robot is close.
+                #
+                # perp_x, perp_y = heading rotated -90 deg (clockwise) =
+                # the right-hand side relative to the person's direction
+                # of travel. lateral_bias is scaled to the current
+                # b=0.25 (roughly one full short-axis width) — large
+                # enough to clearly favor one side, but re-tune if the
+                # pass-behind gap feels too tight or the bias feels too
+                # weak to resolve hesitation. Must be updated together
+                # with the disk-fallback lateral_bias above whenever b
+                # changes, so the bias stays consistent regardless of
+                # whether the ellipse or the rotation-gated disk
+                # fallback is active on a given cycle.
+                # ==========================================================
+                lateral_bias = 0.40
+                perp_x = math.sin(heading)
+                perp_y = -math.cos(heading)
+                ellipse_cx += lateral_bias * perp_x
+                ellipse_cy += lateral_bias * perp_y
 
                 points.extend(
                     self.make_ellipse_points(
@@ -270,14 +405,52 @@ class PredictedPersonCloudNode(Node):
                     )
                 )
 
+        # ==========================================================
+        # THESIS MODIFICATION (robot keep-out filter) - see __init__
+        # ==========================================================
+        try:
+            tfm = self.tf_buffer.lookup_transform(
+                self.frame_id,
+                self.robot_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.05)
+            )
+            self.last_robot_xy = (
+                tfm.transform.translation.x,
+                tfm.transform.translation.y,
+            )
+        except Exception:
+            # TF momentarily unavailable: reuse last known robot pose.
+            pass
+
+        if self.last_robot_xy is not None and points:
+            rx, ry = self.last_robot_xy
+            r2 = self.robot_keepout_radius ** 2
+            n_before = len(points)
+            points = [
+                p for p in points
+                if (p[0] - rx) ** 2 + (p[1] - ry) ** 2 > r2
+            ]
+            n_removed = n_before - len(points)
+            if n_removed > 0:
+                self.get_logger().info(
+                    f"Keep-out: removed {n_removed} point(s) within "
+                    f"{self.robot_keepout_radius:.2f} m of robot"
+                )
+
         cloud = self.create_cloud(points, self.frame_id)
         self.pub.publish(cloud)
 
         if self.active_tracks:
             ids_str = ",".join(str(tid) for tid in self.active_tracks.keys())
+            gated_ids = [
+                str(tid) for tid, t in self.active_tracks.items()
+                if t.get("rotation_gated", False)
+            ]
+            gated_str = f" [ROT GATED: {','.join(gated_ids)}]" if gated_ids else ""
             self.get_logger().info(
                 f"Published cloud for {len(self.active_tracks)} track(s) "
-                f"[{ids_str}] points={len(points)}"
+                f"[{ids_str}] points={len(points)}{gated_str}"
             )
 
 
