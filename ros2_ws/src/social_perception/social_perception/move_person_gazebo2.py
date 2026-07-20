@@ -48,10 +48,11 @@ class PersonMover:
         self.current_x += ux * step
         self.current_y += uy * step
 
-        # Fixed binary yaw based on direction of travel along y:
-        #   moving toward -y ("right")  -> yaw = 0.0
-        #   moving toward +y ("left")   -> yaw = 3.1
-        yaw = 0.0 if dy < 0 else 3.1
+        # THESIS FIX: continuous heading instead of binary 0/pi, with
+        # +pi/2 offset to correct for person_standing model's default
+        # mesh orientation. Verified: x 3->5 => yaw=+pi/2, x 5->3 => yaw=-pi/2.
+        yaw = math.atan2(uy, ux) + math.pi / 2.0
+        yaw = math.atan2(math.sin(yaw), math.cos(yaw))  # normalize to [-pi, pi]
 
         return self.current_x, self.current_y, self.current_z, yaw
 
@@ -82,8 +83,8 @@ class MovePeopleGazebo(Node):
         # phase to person_1).
         # ==================================================
         self.people = [
-            PersonMover("person_1", point_a=(3.0, -2.0, 0.0), point_b=(3.0, 2.0, 0.0)),
-            PersonMover("person_2", point_a=(6.0, 2.0, 0.0), point_b=(6.0, -2.0, 0.0)),
+            PersonMover("person_1", point_a=(2.0, -1, 0.0), point_b=(7.0, -1, 0.0)),
+            PersonMover("person_2", point_a=(2.0, 1, 0.0), point_b=(7.0, 1, 0.0)),
         ]
 
         self.last_time = self.get_clock().now()
