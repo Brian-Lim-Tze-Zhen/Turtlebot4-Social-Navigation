@@ -50,7 +50,7 @@ class PredictedPersonCloudNode(Node):
         # doesn't keep a phantom obstacle forever.
         # ==========================================================
         self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen, heading_sin, heading_cos)
-        self.track_timeout = 0.8        # seconds before a silent track is dropped
+        self.track_timeout = 0.2        # seconds before a silent track is dropped
         self.publish_rate_hz = 10.0   # cloud publish rate, decoupled from detection rate
 
         # ==========================================================
@@ -333,7 +333,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.40 # matches ellipse b=0.50 below
+                    lateral_bias = 0.20 # matches ellipse b=0.50 below
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -352,10 +352,10 @@ class PredictedPersonCloudNode(Node):
                 # shift is applied here; the "shift forward by a" this
                 # comment used to describe is stale and no longer reflects
                 # this code.
-                a = 1.10
-                b = 0.40
-                ellipse_cx = predicted_x
-                ellipse_cy = predicted_y
+                a = 0.6
+                b = 0.2
+                ellipse_cx = current_x + a * math.cos(heading)
+                ellipse_cy = current_y + a * math.sin(heading)
 
                 # ==========================================================
                 # THESIS MODIFICATION (head-on symmetry break / pass-right bias)
@@ -387,7 +387,7 @@ class PredictedPersonCloudNode(Node):
                 # whether the ellipse or the rotation-gated disk
                 # fallback is active on a given cycle.
                 # ==========================================================
-                lateral_bias = 0.40
+                lateral_bias = 0.20
                 perp_x = math.sin(heading)
                 perp_y = -math.cos(heading)
                 ellipse_cx += lateral_bias * perp_x
