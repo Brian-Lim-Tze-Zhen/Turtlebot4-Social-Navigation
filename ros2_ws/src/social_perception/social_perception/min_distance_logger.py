@@ -39,11 +39,13 @@ def main(args=None):
     node = MinDistanceLogger()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
-    node.get_logger().info(f"=== TRIAL MIN DISTANCE: {node.min_dist:.3f} m ===")
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        print(f"=== TRIAL MIN DISTANCE: {node.min_dist:.3f} m ===")
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
