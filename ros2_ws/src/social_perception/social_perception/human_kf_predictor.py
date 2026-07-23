@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from nav_msgs.msg import Odometry
 
 
 class HumanTrackKF:
@@ -44,11 +45,11 @@ class HumanTrackKF:
         # smoothing below.
         # ==========================================================
         q_pos = 0.05
-        q_vel = 0.02
+        q_vel = 0.005
         self.Q = np.diag([q_pos, q_pos, q_vel, q_vel])
 
         # Measurement noise
-        self.R = np.eye(2) * 0.50
+        self.R = np.eye(2) * 0.80
 
         # Measurement matrix: only position x, y is measured
         self.H = np.array([
@@ -59,13 +60,6 @@ class HumanTrackKF:
         self.last_time = timestamp
         self.last_conf = 1.0  # updated each measurement; used when coasting
         self.update_count = 0  # suppress velocity prediction during warm-up
-
-        # THESIS ADDITION (group formation support): most recent pixel
-        # bbox from yolo_detector.py, side-channeled through for
-        # group_formation_detector.py's MobileCLIP cropping. Not used in
-        # any KF math. Goes stale (use with caution) the longer a track
-        # has been coasting without a fresh detection.
-        self.last_bbox = None
 
         # ==========================================================
         # THESIS MODIFICATION (prediction stability fix)
@@ -91,7 +85,7 @@ class HumanTrackKF:
         self.vx_filt = None
         self.vy_filt = None
 
-    def update(self, meas_x, meas_y, timestamp):
+    def update(self, meas_x, meas_y, timestamp, freeze_velocity=False):
         dt_raw = timestamp - self.last_time
 
         # Reset velocity when the track was lost long enough that the old
@@ -122,7 +116,7 @@ class HumanTrackKF:
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + self.Q
 
-        # Measurement update step
+        # Measurement update step — always update position
         z = np.array([[meas_x], [meas_y]], dtype=float)
 
         y = z - self.H @ self.x
@@ -133,34 +127,46 @@ class HumanTrackKF:
         self.P = (np.eye(4) - K @ self.H) @ self.P
 
         # ==========================================================
-        # THESIS MODIFICATION (prediction stability fix)
+        # THESIS MODIFICATION (ego-motion rotation gate)
         #
-        # Update the EMA-smoothed velocity from this step's raw KF
-        # velocity estimate. Done here (once per update) rather than
-        # in predict_future() so that calling predict_future()
-        # multiple times with different horizons does not re-apply
-        # smoothing repeatedly or drift the filter state.
+        # When the robot is rotating fast (angular velocity above
+        # threshold), the camera-frame apparent motion of the person
+        # contaminates the KF velocity estimate. This causes the
+        # predicted ellipse to flip direction during avoidance
+        # manoeuvres, trapping the robot inside the obstacle zone.
+        #
+        # Fix: when freeze_velocity=True (set by HumanKFPredictor
+        # when |odom angular.z| > rot_gate_threshold), skip the EMA
+        # velocity update. Position tracking continues as normal
+        # (the KF still sees new measurements and updates x, y),
+        # but the smoothed velocity fed into predict_future() holds
+        # its last known value until the robot stops rotating.
+        #
+        # This means the ellipse holds its last known direction
+        # during avoidance rotations instead of chasing ego-motion
+        # noise.
         # ==========================================================
         self.update_count += 1
 
-        vx_raw = float(self.x[2, 0])
-        vy_raw = float(self.x[3, 0])
+        if not freeze_velocity:
+            vx_raw = float(self.x[2, 0])
+            vy_raw = float(self.x[3, 0])
 
-        if self.vx_filt is None:
-            self.vx_filt = vx_raw
-            self.vy_filt = vy_raw
-        else:
-            # If the raw velocity has reversed direction (negative dot product
-            # with the current filtered estimate), reset the EMA immediately
-            # so the predicted sphere doesn't lag behind a direction change.
-            dot = vx_raw * self.vx_filt + vy_raw * self.vy_filt
-            if dot < 0.0:
+            if self.vx_filt is None:
                 self.vx_filt = vx_raw
                 self.vy_filt = vy_raw
             else:
-                a = self.smooth_alpha
-                self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
-                self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
+                # If the raw velocity has reversed direction (negative dot product
+                # with the current filtered estimate), reset the EMA immediately
+                # so the predicted sphere doesn't lag behind a direction change.
+                dot = vx_raw * self.vx_filt + vy_raw * self.vy_filt
+                if dot < 0.0:
+                    self.vx_filt = vx_raw
+                    self.vy_filt = vy_raw
+                else:
+                    a = self.smooth_alpha
+                    self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
+                    self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
 
     def predict_future(self, horizon):
         x = float(self.x[0, 0])
@@ -200,7 +206,7 @@ class HumanTrackKF:
         pred_x = x + vx_pred * horizon
         pred_y = y + vy_pred * horizon
 
-        return x, y, vx, vy, pred_x, pred_y
+        return x, y, vx_pred, vy_pred, pred_x, pred_y
 
 
 class HumanKFPredictor(Node):
@@ -212,8 +218,9 @@ class HumanKFPredictor(Node):
         # =====================================
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
-        self.declare_parameter("prediction_horizon", 2.0)
-        self.declare_parameter("coast_timeout", 0.5)
+        self.declare_parameter("prediction_horizon", 3.0)
+        self.declare_parameter("coast_timeout", 1.5)
+        self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
 
         # =====================================
         # Load parameters
@@ -242,10 +249,27 @@ class HumanKFPredictor(Node):
             .double_value
         )
 
+        self.rot_gate_threshold = (
+            self.get_parameter("rot_gate_threshold")
+            .get_parameter_value()
+            .double_value
+        )
+
         # =====================================
         # Internal state
         # =====================================
         self.tracks = {}
+
+        # ==========================================================
+        # THESIS MODIFICATION (ego-motion rotation gate)
+        #
+        # Track robot angular velocity from /odom so the KF velocity
+        # update can be frozen when the robot is rotating. Initialised
+        # to 0.0 (not rotating) so the gate is inactive until the
+        # first odom message arrives.
+        # ==========================================================
+        self.robot_angular_z = 0.0
+        self.rotation_gated = False  # for logging — avoids repeating the log
 
         # =====================================
         # ROS interfaces
@@ -263,6 +287,14 @@ class HumanKFPredictor(Node):
             10
         )
 
+        # Subscribe to /odom for robot angular velocity
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            "/odom",
+            self.odom_callback,
+            20
+        )
+
         # Coast timer: publish predictions for recently-seen tracks even when
         # detections are absent; prune tracks silent longer than coast_timeout.
         self.create_timer(0.2, self.coast_callback)
@@ -271,12 +303,39 @@ class HumanKFPredictor(Node):
         self.get_logger().info(f"Input : {self.input_topic}")
         self.get_logger().info(f"Output: {self.output_topic}")
         self.get_logger().info(f"Prediction horizon: {self.prediction_horizon:.2f} s")
+        self.get_logger().info(
+            f"Rotation gate threshold: {self.rot_gate_threshold:.2f} rad/s"
+        )
 
     def get_ros_time_seconds(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def odom_callback(self, msg):
+        self.robot_angular_z = msg.twist.twist.angular.z
+
     def person_callback(self, msg):
         now = self.get_ros_time_seconds()
+
+        # ==========================================================
+        # THESIS MODIFICATION (ego-motion rotation gate)
+        #
+        # Check if robot is rotating above threshold. If so, freeze
+        # the KF velocity update for all tracks this tick.
+        # ==========================================================
+        freeze_velocity = abs(self.robot_angular_z) > self.rot_gate_threshold
+
+        if freeze_velocity and not self.rotation_gated:
+            self.get_logger().info(
+                f"Rotation gate ACTIVE: angular_z={self.robot_angular_z:.3f} rad/s "
+                f"> threshold={self.rot_gate_threshold:.2f} rad/s — "
+                f"KF velocity update frozen"
+            )
+            self.rotation_gated = True
+        elif not freeze_velocity and self.rotation_gated:
+            self.get_logger().info(
+                f"Rotation gate CLEARED: angular_z={self.robot_angular_z:.3f} rad/s"
+            )
+            self.rotation_gated = False
 
         try:
             parts = msg.data.split(",")
@@ -289,18 +348,18 @@ class HumanKFPredictor(Node):
             base_x = float(parts[2])
             base_y = float(parts[3])
 
-            # THESIS ADDITION (group formation support): trailing pixel
-            # bbox fields, appended by yolo_detector.py as
-            # ...,depth,u,v,x1,y1,x2,y2 (11 fields total). Default to
-            # None if absent so this stays compatible with any message
-            # that doesn't carry them (e.g. an older recorded bag).
+            # THESIS ADDITION (group formation support): parse the bbox
+            # corners yolo_detector.py now appends as 4 trailing fields
+            # (x1,y1,x2,y2). Only present on a genuine fresh detection —
+            # this is exactly the "fresh" bbox group_formation_detector.py
+            # wants; coasted publishes below deliberately omit it.
+            bbox = None
             if len(parts) >= 11:
-                bbox = (
-                    int(parts[7]), int(parts[8]),
-                    int(parts[9]), int(parts[10]),
-                )
-            else:
-                bbox = None
+                try:
+                    bx1, by1, bx2, by2 = (int(float(p)) for p in parts[7:11])
+                    bbox = (bx1, by1, bx2, by2)
+                except ValueError:
+                    bbox = None
 
         except Exception as e:
             self.get_logger().warn(
@@ -311,20 +370,16 @@ class HumanKFPredictor(Node):
         if track_id not in self.tracks:
             self.tracks[track_id] = HumanTrackKF(base_x, base_y, now)
             self.tracks[track_id].last_conf = conf
-            self.tracks[track_id].last_bbox = bbox
             self.get_logger().info(f"Created KF track for id:{track_id}")
             return
 
         track = self.tracks[track_id]
         track.last_conf = conf
-        # THESIS ADDITION (group formation support): keep the most recent
-        # pixel bbox alongside the track, purely as a side-channel for
-        # group_formation_detector.py's cropping — not used anywhere in
-        # the KF math itself.
-        track.last_bbox = bbox
-        track.update(base_x, base_y, now)
+        track.update(base_x, base_y, now, freeze_velocity=freeze_velocity)
 
         x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
+
+        bbox_str = f"{bbox[0]};{bbox[1]};{bbox[2]};{bbox[3]}" if bbox is not None else "none"
 
         out = String()
         out.data = (
@@ -334,7 +389,8 @@ class HumanKFPredictor(Node):
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
             f"{self.prediction_horizon:.2f},"
-            f"{self._bbox_str(bbox)}"
+            f"{1 if freeze_velocity else 0},"   # field [9] — rotation gate active
+            f"{bbox_str}"                      # field [10] — bbox or "none"
         )
 
         self.pub.publish(out)
@@ -344,17 +400,8 @@ class HumanKFPredictor(Node):
             f"pos=({x:.2f},{y:.2f}) "
             f"vel=({vx:.2f},{vy:.2f}) "
             f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f})"
+            + (" [ROT GATED]" if freeze_velocity else "")
         )
-
-    @staticmethod
-    def _bbox_str(bbox):
-        # THESIS ADDITION (group formation support): serialize bbox as
-        # "x1;y1;x2;y2" (semicolon, not comma, so it doesn't disturb the
-        # outer CSV split) or "none" if unavailable.
-        if bbox is None:
-            return "none"
-        x1, y1, x2, y2 = bbox
-        return f"{x1};{y1};{x2};{y2}"
 
     def coast_callback(self):
         now = self.get_ros_time_seconds()
@@ -382,7 +429,8 @@ class HumanKFPredictor(Node):
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
                 f"{self.prediction_horizon:.2f},"
-                f"none"
+                f"0,"                              # field [9] — rotation gate (always inactive on coast)
+                f"none"                             # field [10] — no fresh bbox while coasting
             )
             self.pub.publish(out)
 

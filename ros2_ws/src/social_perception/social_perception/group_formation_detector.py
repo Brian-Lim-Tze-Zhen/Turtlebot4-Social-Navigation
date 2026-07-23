@@ -48,10 +48,12 @@ INPUT
 Subscribes to /predicted_person_positions (String), CSV format from the
 current human_kf_predictor.py:
 
-    track_id,conf,x,y,vx,vy,pred_x,pred_y,horizon,bbox
+    track_id,conf,x,y,vx,vy,pred_x,pred_y,horizon,rotation_gate,bbox
 
-    bbox is "x1;y1;x2;y2" (semicolons) or the literal string "none" if
-    no fresh detection bbox is available this cycle (e.g. a coasted
+    Field [9] is the rotation-gate flag ("0"/"1"), unrelated to this
+    node but must not be misread as bbox. Field [10] is the bbox as
+    "x1;y1;x2;y2" (semicolons) or the literal string "none" if no
+    fresh detection bbox is available this cycle (e.g. a coasted
     prediction). Only tracks with a fresh, non-"none" bbox are eligible
     for the MobileCLIP confirmatory crop.
 
@@ -216,21 +218,11 @@ class GroupFormationDetector(Node):
         # frame when no ambiguous pair currently needs it.
         self.latest_frame = msg
 
-        # TEMP DEBUG: save the full raw frame every 30th callback so we
-        # can inspect the camera's actual vertical field of view.
-        if not hasattr(self, '_debug_frame_counter'):
-            self._debug_frame_counter = 0
-        self._debug_frame_counter += 1
-        if self._debug_frame_counter % 30 == 0:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            import cv2
-            cv2.imwrite("/root/thesis_social_navigation_ws/debug_full_frame.png", frame)
-
     def position_callback(self, msg):
         now = self.get_ros_time_seconds()
         parts = msg.data.split(",")
 
-        if len(parts) < 9:
+        if len(parts) < 10:
             self.get_logger().warn(f"Invalid /predicted_person_positions msg: {msg.data}")
             return
 
@@ -245,9 +237,9 @@ class GroupFormationDetector(Node):
             return
 
         bbox = None
-        if len(parts) >= 10 and parts[9] != "none":
+        if len(parts) >= 11 and parts[10] != "none":
             try:
-                bx1, by1, bx2, by2 = (int(v) for v in parts[9].split(";"))
+                bx1, by1, bx2, by2 = (int(v) for v in parts[10].split(";"))
                 bbox = (bx1, by1, bx2, by2)
             except ValueError:
                 bbox = None
