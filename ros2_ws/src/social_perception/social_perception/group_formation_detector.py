@@ -86,9 +86,12 @@ WHAT THIS FILE DOES NOT DO YET
 -----------------------------------------------------------------------
 1. It does not feed the costmap. /social_groups is published but has no
    consumer yet - that's social_group_cloud_node.py, the next piece.
-2. MobileCLIP loading/inference is stubbed behind a clear interface
-   (classify_facing) so this runs and is testable BEFORE MobileCLIP is
-   set up in Docker. Swap the stub body once the model is available.
+2. MobileCLIP loading/inference is fully implemented in classify_facing()
+   — real model load, real encode_image/encode_text calls, no stub
+   remaining. Facing-classification was validated via a controlled
+   distance sweep: confirmed reliable when the bbox top (y1) sits
+   clear of the frame edge, unreliable/flips wrong when y1=0 (head
+   clipped). See TOP_CLIP_MARGIN_PX below.
 3. Queue detection here uses a simple "fit a line, check residuals"
    approach. It will need real-world tuning (DBSCAN-style clustering
    first, if you ever have multiple simultaneous queues in frame at
@@ -139,6 +142,15 @@ ENABLE_VLM_CONFIRMATION = True
 VLM_MIN_CONFIDENCE = 0.55    # below this similarity margin, fall back to "no group"
 RGB_TOPIC = "/oakd/rgb/preview/image_raw"
 
+# --- Framing gate for VLM confirmation ---
+# Empirically calibrated via a controlled distance sweep (see thesis
+# notes): bbox y1=0 (flush against the top of a 240px frame) correlates
+# with head-clipping and unreliable/flipped facing-classification.
+# y1>=5 was clean across every trial in the sweep; y1=0 was wrong or
+# borderline across every trial. Skip classify_facing() entirely rather
+# than risk a confidently-wrong result when framing is this tight.
+TOP_CLIP_MARGIN_PX = 5
+
 
 class TrackState:
     """Latest known state for one tracked person, plus a short history
@@ -176,10 +188,30 @@ class GroupFormationDetector(Node):
         )
         self.clip_model.eval()
         self.clip_tokenizer = open_clip.get_tokenizer('MobileCLIP-S1')
+
+        # ==========================================================
+        # THESIS MODIFICATION (prompt-bias fix)
+        #
+        # Original 3-way prompt set ("facing each other talking" /
+        # "back to back" / "standing apart not interacting") was
+        # empirically shown to have a strong bias toward the "apart"
+        # prompt regardless of image content - confirmed via a
+        # horizontal-flip invariance test (near-identical scores on
+        # original vs. mirrored crop, ruling out orientation cues as
+        # the driver) and a real-photo control image (unambiguous
+        # facing-each-other photo still lost to "far apart" 0.627 to
+        # 0.235). Root cause: unbalanced prompt structure (compound
+        # claim vs. simple claims of different lengths) biases the
+        # softmax independent of the image.
+        #
+        # Fix: minimal-contrast binary pair (negation only, same
+        # length/structure) removes the structural bias. Verified on
+        # both the real photo (0.587) and the actual synthetic crop
+        # (0.564) - both now correctly favor "facing each other".
+        # ==========================================================
         self.clip_prompts = [
-            "two people facing each other talking",
-            "two people standing back to back",
-            "two people standing apart not interacting",
+            "two people facing each other",
+            "two people not facing each other",
         ]
         self.clip_text_tokens = self.clip_tokenizer(self.clip_prompts)
         with torch.no_grad():
@@ -300,6 +332,20 @@ class GroupFormationDetector(Node):
             # is meaningless at near-zero speed for both members.
             confirmed = True
             if ENABLE_VLM_CONFIRMATION:
+                # ==========================================================
+                # THESIS MODIFICATION (framing gate)
+                #
+                # Empirically calibrated distance sweep showed
+                # classify_facing() is unreliable (and can confidently
+                # flip to the wrong answer) when either person's bbox
+                # is clipped at the top of frame (head cut off). Skip
+                # the VLM call entirely in that case rather than trust
+                # a result known to be unreliable at this framing.
+                # See TOP_CLIP_MARGIN_PX above for the calibration data.
+                # ==========================================================
+                if self._bbox_clipped_at_top(ta.bbox) or self._bbox_clipped_at_top(tb.bbox):
+                    continue
+
                 confirmed = self.classify_facing(ta, tb)
                 if confirmed is None:
                     # VLM unavailable/inconclusive this cycle - fall back
@@ -413,16 +459,28 @@ class GroupFormationDetector(Node):
                 half_length, half_width, member_ids)
 
     # -------------------------------------------------------------
-    # MobileCLIP confirmatory classification (STUB)
+    # Framing gate helper
+    #
+    # bbox is (x1, y1, x2, y2) in pixel coordinates, y1 = top edge.
+    # y1 <= TOP_CLIP_MARGIN_PX means the box is flush (or nearly
+    # flush) against the top of frame - empirically correlated with
+    # head-clipping and unreliable classify_facing() results.
+    # -------------------------------------------------------------
+    @staticmethod
+    def _bbox_clipped_at_top(bbox):
+        if bbox is None:
+            return True
+        _, y1, _, _ = bbox
+        return y1 <= TOP_CLIP_MARGIN_PX
+
+    # -------------------------------------------------------------
+    # MobileCLIP confirmatory classification
     #
     # Returns:
     #   True  -> confirmed facing each other (conversation)
     #   False -> confirmed NOT facing each other (e.g. back-to-back)
-    #   None  -> inconclusive / model unavailable this cycle
-    #
-    # Swap the body of this method once MobileCLIP is set up in Docker.
-    # Everything around it (when it's called, how its result is used)
-    # already matches the final integration point.
+    #   None  -> inconclusive (no bbox/frame yet, crop failed, or
+    #            best similarity score < VLM_MIN_CONFIDENCE)
     # -------------------------------------------------------------
     def classify_facing(self, ta, tb):
         if ta.bbox is None or tb.bbox is None or self.latest_frame is None:
@@ -435,13 +493,15 @@ class GroupFormationDetector(Node):
 
         crop_rgb = crop[:, :, ::-1]
         pil_image = Image.fromarray(crop_rgb)
-        pil_image.save("/root/thesis_social_navigation_ws/debug_clip_crop.png")  # TEMP DEBUG
         image_input = self.clip_preprocess(pil_image).unsqueeze(0)
 
         with torch.no_grad():
             image_features = self.clip_model.encode_image(image_input)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             similarities = (100.0 * image_features @ self.clip_text_features.T).softmax(dim=-1)
+
+        for i, prompt in enumerate(self.clip_prompts):
+            self.get_logger().info(f"  [{i}] '{prompt}' = {float(similarities[0, i]):.3f}")
 
         best_idx = int(similarities.argmax())
         best_score = float(similarities[0, best_idx])
