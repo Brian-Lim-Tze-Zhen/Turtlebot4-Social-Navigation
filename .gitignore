@@ -39,3 +39,10 @@ output.log
 ros2_ws/.claude/
 ros2_ws/CLAUDE.md
 ros2_ws/debug_notes_2026-06-24.md
+
+# Trial run logs and evaluation outputs - regenerate per-run, don't
+# accumulate test-run artifacts in git history (same rationale as
+# rosbag recordings above)
+**/eval_logs/
+**/eval_plots/
+*_trial.log
