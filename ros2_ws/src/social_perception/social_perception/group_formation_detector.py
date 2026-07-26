@@ -280,6 +280,36 @@ class GroupFormationDetector(Node):
         # Detection runs on its own timer, decoupled from message arrival
         # rate, same pattern as predicted_person_cloud_node.py's publish
         # timer - keeps group detection at a fixed, predictable cadence.
+        # ==========================================================
+        # THESIS MODIFICATION (sticky confirmed pair)
+        #
+        # detect_groups() rebuilds every group from scratch each cycle,
+        # so a pair confirmed by the VLM 30s ago had to re-earn that
+        # confirmation every 0.3s. That inverted the desired behaviour
+        # at close range: once the robot approaches within ~3.0m the
+        # framing gate (TOP_CLIP_MARGIN_PX) starts skipping the VLM, so
+        # an established conversation silently dropped out of
+        # /social_groups exactly as the robot got close enough for the
+        # zone to matter for navigation.
+        #
+        # Fix: remember confirmation per pair. Once confirmed, the pair
+        # keeps its status on cheap geometry alone (distance + speed),
+        # and the VLM is not re-run.
+        #
+        # Keyed on frozenset({id_a, id_b}) of the STABLE ids supplied by
+        # identity_fusion_node, so the key survives a ByteTrack id switch
+        # across occlusion - the same mechanism that keeps close_since
+        # alive. A raw ByteTrack key would break on every re-detection.
+        #
+        # KNOWN LIMITATION (accepted, not solved): confirmation is
+        # cleared only when geometry breaks. Two people who stay close
+        # and stationary but turn back-to-back keep a stale
+        # "conversation" flag indefinitely, since nothing re-checks
+        # facing. Revisit if a scenario exercises it - the fix would be
+        # opportunistic re-validation whenever framing allows.
+        # ==========================================================
+        self.confirmed_pairs = {}   # frozenset({id_a, id_b}) -> confirm time
+
         self.detect_timer = self.create_timer(0.3, self.detect_groups)
 
         self.get_logger().info("Group formation detector started")
@@ -351,6 +381,14 @@ class GroupFormationDetector(Node):
         for tid in stale:
             del self.tracks[tid]
 
+        # Without this, confirmed_pairs would grow unbounded as tracks
+        # come and go. Deletion happens only after
+        # IDENTITY_RETENTION_TIMEOUT, so an occlusion does NOT reach here.
+        if stale:
+            gone = set(stale)
+            for key in [k for k in self.confirmed_pairs if k & gone]:
+                del self.confirmed_pairs[key]
+
         # Only tracks with a FRESH position take part in geometry; the
         # rest are retained (see IDENTITY_RETENTION_TIMEOUT) but their
         # stale coordinates must not drive distance/speed decisions.
@@ -397,7 +435,16 @@ class GroupFormationDetector(Node):
             # Facing direction is the genuine ambiguity - velocity heading
             # is meaningless at near-zero speed for both members.
             confirmed = True
-            if ENABLE_VLM_CONFIRMATION:
+            pair_key = frozenset((id_a, id_b))
+
+            if ENABLE_VLM_CONFIRMATION and pair_key in self.confirmed_pairs:
+                # Already confirmed - hold it on geometry alone. This is
+                # the whole point: no VLM call, so the framing gate
+                # cannot revoke an established conversation as the robot
+                # closes in. See self.confirmed_pairs in __init__.
+                confirmed = True
+
+            elif ENABLE_VLM_CONFIRMATION:
                 # ==========================================================
                 # THESIS MODIFICATION (framing gate)
                 #
@@ -422,6 +469,12 @@ class GroupFormationDetector(Node):
                     continue
 
             if confirmed:
+                if ENABLE_VLM_CONFIRMATION and pair_key not in self.confirmed_pairs:
+                    self.confirmed_pairs[pair_key] = now
+                    self.get_logger().info(
+                        f"Pair ({id_a},{id_b}) VLM-confirmed - now sticky, "
+                        f"held on geometry until it breaks")
+
                 groups.append(self._build_conversation_zone(ta, tb, id_a, id_b))
                 used_in_conversation.add(id_a)
                 used_in_conversation.add(id_b)
@@ -437,6 +490,13 @@ class GroupFormationDetector(Node):
     def _clear_close_since(self, ta, tb, id_a, id_b):
         ta.close_since.pop(id_b, None)
         tb.close_since.pop(id_a, None)
+
+        # Geometry broke (moved apart or started walking) - this is the
+        # ONLY thing that revokes a sticky confirmation. Called from the
+        # distance and speed checks in detect_groups().
+        if self.confirmed_pairs.pop(frozenset((id_a, id_b)), None) is not None:
+            self.get_logger().info(
+                f"Pair ({id_a},{id_b}) confirmation cleared - geometry broke")
 
     # -------------------------------------------------------------
     # Conversation zone geometry
