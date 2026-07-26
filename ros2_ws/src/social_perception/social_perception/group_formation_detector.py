@@ -146,6 +146,28 @@ IDENTITY_RETENTION_TIMEOUT = 300.0  # s; state kept for re-identification
 # it or (wrongly) counting the blind window as time spent conversing.
 CONV_MAX_CONTINUITY_GAP = 1.0     # s
 
+# --- Bbox retention ---
+# /predicted_person_positions interleaves measurement messages (real
+# bbox) with coasted ones (bbox "none") at roughly 0.1s spacing, because
+# human_kf_predictor's coast timer republishes without a detection. The
+# old code assigned t.bbox unconditionally, so every coasted message
+# wiped a perfectly good bbox from ~0.1s earlier - roughly halving the
+# frames on which classify_facing() had two usable bboxes and could run
+# the VLM at all.
+#
+# Fix: keep the last real bbox instead of nulling it. But a retained
+# bbox cannot be kept forever - if the person moves while coasting, the
+# stale pixel region no longer contains them, and cropping it would feed
+# the VLM the wrong image and get a confident wrong answer. That is
+# worse than skipping, since a missed confirmation retries next cycle
+# while a false one propagates.
+#
+# So the bbox carries its own timestamp and is refused past this age.
+# At the ~0.2 m/s walking speeds in the test worlds, 0.5s is well under
+# the time to move a body-width, while comfortably bridging the ~0.1s
+# measurement/coast alternation. Re-tune if people move faster.
+BBOX_MAX_AGE = 0.5                # s
+
 # --- Queue (3+, collinear) ---
 QUEUE_MIN_MEMBERS = 3
 QUEUE_MAX_SPACING = 1.5      # m; max gap between consecutive queue members
@@ -183,7 +205,8 @@ class TrackState:
         self.y = None
         self.vx = 0.0
         self.vy = 0.0
-        self.bbox = None          # (x1, y1, x2, y2) or None if stale/unavailable
+        self.bbox = None          # (x1, y1, x2, y2); last REAL bbox seen
+        self.bbox_time = None     # when self.bbox was captured
         self.last_update = None
         # Timestamp at which this track first became a member of *some*
         # close-pair candidate; reset to None when it stops qualifying.
@@ -307,7 +330,11 @@ class GroupFormationDetector(Node):
 
         t = self.tracks[track_id]
         t.x, t.y, t.vx, t.vy = x, y, vx, vy
-        t.bbox = bbox
+        # Only overwrite on a REAL bbox - a coasted message carries
+        # "none" and must not erase the last good one. See BBOX_MAX_AGE.
+        if bbox is not None:
+            t.bbox = bbox
+            t.bbox_time = now
         t.last_update = now
 
     # -------------------------------------------------------------
@@ -523,6 +550,16 @@ class GroupFormationDetector(Node):
     # -------------------------------------------------------------
     def classify_facing(self, ta, tb):
         if ta.bbox is None or tb.bbox is None or self.latest_frame is None:
+            return None
+
+        # Refuse a retained bbox that has gone stale: it may no longer
+        # contain the person, and cropping it would hand the VLM the
+        # wrong image. See BBOX_MAX_AGE.
+        now = self.get_ros_time_seconds()
+        if ta.bbox_time is None or tb.bbox_time is None:
+            return None
+        if (now - ta.bbox_time > BBOX_MAX_AGE
+                or now - tb.bbox_time > BBOX_MAX_AGE):
             return None
 
         frame = self.bridge.imgmsg_to_cv2(self.latest_frame, desired_encoding="bgr8")
