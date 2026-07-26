@@ -124,6 +124,28 @@ CONV_MIN_DIST = 0.3          # m; below this, treat as same-person noise/overlap
 CONV_MAX_SPEED = 0.15        # m/s; "near-stationary" threshold
 CONV_MIN_DURATION = 1.5      # s; sustained closeness before flagging
 
+# --- Identity retention across occlusion ---
+# Split from the old single 1.0s staleness prune, which deleted the whole
+# TrackState - and with it close_since - after 1s of silence. With stable
+# IDs from identity_fusion_node, the ID survives a camera occlusion, but
+# it had nothing to come back TO: the accumulated conversation time was
+# already gone.
+#
+# FRESH_POSITION_TIMEOUT gates GEOMETRY: a track whose position is older
+# than this has untrustworthy coordinates and is excluded from pairing.
+# IDENTITY_RETENTION_TIMEOUT gates DELETION: the TrackState (and its
+# close_since history) is kept far longer, so a person who walks behind
+# an obstacle and returns resumes their established conversation instead
+# of restarting the CONV_MIN_DURATION clock from zero.
+FRESH_POSITION_TIMEOUT = 1.0      # s; position trusted for geometry
+IDENTITY_RETENTION_TIMEOUT = 300.0  # s; state kept for re-identification
+
+# Max gap between consecutive qualifying ticks that still counts as
+# continuous conversation time. Larger gaps are treated as an occlusion:
+# the pair RESUMES its accumulated duration rather than either resetting
+# it or (wrongly) counting the blind window as time spent conversing.
+CONV_MAX_CONTINUITY_GAP = 1.0     # s
+
 # --- Queue (3+, collinear) ---
 QUEUE_MIN_MEMBERS = 3
 QUEUE_MAX_SPACING = 1.5      # m; max gap between consecutive queue members
@@ -165,7 +187,11 @@ class TrackState:
         self.last_update = None
         # Timestamp at which this track first became a member of *some*
         # close-pair candidate; reset to None when it stops qualifying.
-        self.close_since = {}     # other_track_id -> first_close_timestamp
+        # other_track_id -> [accumulated_close_seconds, last_tick_time]
+        # Accumulated rather than a single first-seen timestamp, so an
+        # occlusion gap can be excluded from the total instead of being
+        # counted as conversation time.
+        self.close_since = {}
 
 
 class GroupFormationDetector(Node):
@@ -293,11 +319,17 @@ class GroupFormationDetector(Node):
         # Drop tracks that have gone silent - same staleness pattern used
         # in predicted_person_cloud_node.py / human_kf_predictor.py.
         stale = [tid for tid, t in self.tracks.items()
-                 if t.last_update is None or now - t.last_update > 1.0]
+                 if t.last_update is None
+                 or now - t.last_update > IDENTITY_RETENTION_TIMEOUT]
         for tid in stale:
             del self.tracks[tid]
 
-        active_ids = list(self.tracks.keys())
+        # Only tracks with a FRESH position take part in geometry; the
+        # rest are retained (see IDENTITY_RETENTION_TIMEOUT) but their
+        # stale coordinates must not drive distance/speed decisions.
+        active_ids = [tid for tid, t in self.tracks.items()
+                      if t.last_update is not None
+                      and now - t.last_update <= FRESH_POSITION_TIMEOUT]
         groups = []
         used_in_conversation = set()
 
@@ -317,13 +349,20 @@ class GroupFormationDetector(Node):
                 continue
 
             # Track how long this pair has been continuously close+slow.
-            first_seen = ta.close_since.get(id_b)
-            if first_seen is None:
-                ta.close_since[id_b] = now
-                tb.close_since[id_a] = now
-                first_seen = now
+            entry = ta.close_since.get(id_b)
+            if entry is None:
+                entry = [0.0, now]
+            else:
+                gap = now - entry[1]
+                if gap <= CONV_MAX_CONTINUITY_GAP:
+                    entry[0] += gap          # continuous: count it
+                # else: occlusion gap - resume, do not count the gap
+                entry[1] = now
 
-            duration = now - first_seen
+            ta.close_since[id_b] = entry
+            tb.close_since[id_a] = list(entry)
+
+            duration = entry[0]
             if duration < CONV_MIN_DURATION:
                 continue
 
