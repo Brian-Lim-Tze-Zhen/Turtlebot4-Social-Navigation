@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+"""
+social_group_cloud_node.py
+
+THESIS ADDITION - injects social group zones into the Nav2 costmap.
+
+-----------------------------------------------------------------------
+WHAT THIS DOES
+-----------------------------------------------------------------------
+group_formation_detector.py publishes /social_groups but nothing
+consumed it, so detected conversations had no effect on how the robot
+drove. This node closes that loop: it converts each conversation group
+into a synthetic PointCloud2 obstacle region that Nav2's costmap layer
+consumes, so the planner routes around the group instead of through it.
+
+-----------------------------------------------------------------------
+WHAT REGION IS FILLED, AND WHY
+-----------------------------------------------------------------------
+This fills the O-SPACE only - the shared space BETWEEN the two people -
+not their bodies.
+
+The o-space is the term from Kendon's F-formation work for the inner
+region a conversing group encircles and orients toward. Walking through
+it is the socially disruptive act; passing behind one member is not.
+Filling only the o-space means the robot refuses to thread between two
+people in conversation, while still being able to pass close behind
+either of them. That keeps tight spaces navigable.
+
+The alternative (filling the whole pair, bodies included) was considered
+and rejected: it produces a much larger blocked region, which combined
+with Nav2's inflation layer can wall off a corridor entirely, and risks
+the same local-planner stalling already seen with oversized predicted-
+person ellipses.
+
+The people's own bodies are NOT covered here on purpose -
+predicted_person_cloud_node.py already places a disk on each person.
+Double-covering them would only distort the cost gradient.
+
+-----------------------------------------------------------------------
+SIZING, AND THE PROXEMIC BASIS
+-----------------------------------------------------------------------
+Hall's proxemic zones: intimate <0.45m, personal 0.45-1.2m, social
+1.2-3.6m. Conversation concentrates in the personal zone and the near
+half of social, which is why group_formation_detector uses
+CONV_MAX_DIST=1.8m - it covers all of personal plus the lower part of
+social. Pairs beyond that are more plausibly co-located than conversing.
+
+The o-space grows with the pair's actual separation (verified):
+
+    separation 0.60m -> skipped (no meaningful gap)
+    separation 0.84m -> o-space 0.34m long, 17 points
+    separation 1.00m -> o-space 0.50m long, 31 points
+    separation 1.80m -> o-space 1.30m long, 75 points
+
+Below MIN_O_SPACE_HALF_LENGTH the gap is too small to be worth blocking
+and nothing is published for that group - better than emitting a
+degenerate sliver.
+
+NOTE ON CULTURAL VARIATION (worth stating in the thesis limitations):
+preferred conversational distance varies substantially between cultures,
+so a fixed 1.8m threshold encodes one norm rather than a universal.
+
+-----------------------------------------------------------------------
+COUPLING - READ BEFORE CHANGING CONSTANTS
+-----------------------------------------------------------------------
+/social_groups publishes half_length = separation/2 + ZONE_BUFFER, where
+ZONE_BUFFER is defined in group_formation_detector.py (currently 0.4).
+This node subtracts that buffer back out to recover the raw separation,
+so SOURCE_ZONE_BUFFER below MUST match ZONE_BUFFER there. If they drift
+apart, every zone silently becomes the wrong length - there is no error,
+just wrong geometry. Change them together.
+
+-----------------------------------------------------------------------
+INPUT / OUTPUT
+-----------------------------------------------------------------------
+Subscribes:
+  /social_groups (String)
+      group_id,group_type,cx,cy,axis_x,axis_y,half_length,half_width,members
+
+Publishes:
+  /social_group_cloud (PointCloud2, frame "map")
+
+Costmap plugin: use NonPersistentVoxelLayer, NOT VoxelLayer. VoxelLayer
+clears via raytracing, which fails for synthetic clouds that have no
+real sensor origin, leaving ghost obstacles behind forever.
+NonPersistentVoxelLayer rebuilds from scratch each cycle. This is the
+same lesson already recorded for predicted_person_cloud_node.py.
+
+-----------------------------------------------------------------------
+NOT HANDLED YET
+-----------------------------------------------------------------------
+group_type "queue" is parsed but deliberately skipped. A queue's social
+space is the line itself, not a gap between two members, so the o-space
+geometry here does not transfer. Queue zones need their own shape, and
+queue detection has not yet been exercised against a real 3+ person
+scene. Skipping is preferred over emitting a wrong-shaped zone silently.
+"""
+
+import math
+import struct
+
+import rclpy
+from rclpy.node import Node
+from rclpy.duration import Duration
+
+import tf2_ros
+
+from std_msgs.msg import String, Header
+from sensor_msgs.msg import PointCloud2, PointField
+
+
+# =======================================================================
+# Geometry
+# =======================================================================
+
+# MUST match ZONE_BUFFER in group_formation_detector.py - see COUPLING.
+SOURCE_ZONE_BUFFER = 0.4
+
+# Backed off from each person so the zone covers the GAP, not the bodies.
+# Roughly a body radius; predicted_person_cloud_node already marks the
+# people themselves with a 0.40m disk.
+BODY_CLEARANCE = 0.25
+
+# Half-extent across the pair's axis. Narrower than the source message's
+# half_width (which is just ZONE_BUFFER) because Nav2's inflation layer
+# expands whatever is published - this is the raw obstacle, not the
+# final keep-out distance the robot will actually respect.
+O_SPACE_HALF_WIDTH = 0.35
+
+# Below this the pair are effectively shoulder to shoulder and there is
+# no meaningful gap to protect. Publish nothing rather than a sliver.
+MIN_O_SPACE_HALF_LENGTH = 0.10
+
+POINT_SPACING = 0.10   # m between synthetic points
+POINT_HEIGHT = 0.30    # m; matches predicted_person_cloud_node
+
+
+# =======================================================================
+# Timing / safety
+# =======================================================================
+
+PUBLISH_RATE_HZ = 10.0
+
+# =======================================================================
+# Lidar-anchored persistence
+# =======================================================================
+# PROBLEM: the zone vanished exactly when the robot got close, which is
+# when it matters most. group_formation_detector only emits a group
+# while BOTH members are in active_ids, which needs fresh camera
+# positions. The OAK-D preview is narrow - two people 1m apart only both
+# fit from ~3m back - so approaching or rotating drops one of them,
+# /social_groups goes quiet, and GROUP_TIMEOUT cleared the zone.
+#
+# That is a camera FOV limit, not a logic error, and the sticky
+# confirmed-pair flag cannot fix it: the flag preserves the CONFIRMATION,
+# but with no fresh positions there is no pair to publish at all.
+#
+# FIX: the lidar does not share the camera's occlusion geometry (the same
+# asymmetry identity_fusion_node exploits for re-ID). While the camera is
+# blind, hold the zone open as long as lidar tracks still sit near where
+# the members were, and MOVE the zone to follow those tracks so it stays
+# correct if the pair drifts.
+#
+# /social_groups carries stable CAMERA ids while /lidar_person_clusters
+# carries lidar track ids - different numbering, and the binding between
+# them lives inside identity_fusion_node and is not published. So members
+# are matched to anchors BY POSITION instead, using the camera-lidar
+# offset measured empirically (0.043-0.114m, hence a 0.35m gate with
+# room to spare, well under the 1.0m person-to-person spacing).
+LIDAR_TOPIC = "/lidar_person_clusters"
+
+# Max distance from a member's last known position to a lidar track for
+# that track to count as its anchor.
+LIDAR_ANCHOR_GATE = 0.35
+
+# Drop a cached lidar track this long after its last message.
+LIDAR_TRACK_TIMEOUT = 1.0
+
+# How long a group may be held open on lidar anchors alone, with no
+# camera confirmation at all. Bounded so a group cannot persist
+# indefinitely on geometry the VLM has never re-examined.
+MAX_LIDAR_ONLY_HOLD = 60.0
+
+# Recomputed separation limit while running on lidar anchors. MUST match
+# CONV_MAX_DIST in group_formation_detector.py - if the pair walks apart
+# while the camera is blind, the zone must die on the same criterion the
+# camera path would have used.
+CONV_MAX_DIST = 1.8
+
+# Drop a group this long after its last message. group_formation_detector
+# publishes at 0.3s, so 1.0s tolerates a couple of missed cycles without
+# leaving a zone frozen in the costmap after the group has dispersed.
+GROUP_TIMEOUT = 1.0
+
+# Robot keep-out. Without this, a zone can place lethal cost under the
+# robot's own footprint - the controller then scores every trajectory as
+# blocked and the robot stalls or oscillates. This already happened with
+# predicted_person_cloud_node's ellipse in head-on encounters.
+#
+# A conversation zone makes it MORE likely, not less: it is static and
+# persistent, and the robot is expected to pass close by. Keep the radius
+# footprint-sized - making it large would carve a moving hole through the
+# zone and let the robot drive straight through the conversation.
+ROBOT_FRAME = "base_link"
+ROBOT_KEEPOUT_RADIUS = 0.25
+
+
+class SocialGroupCloudNode(Node):
+    def __init__(self):
+        super().__init__("social_group_cloud_node")
+
+        self.declare_parameter("input_topic", "/social_groups")
+        self.declare_parameter("output_topic", "/social_group_cloud")
+        self.declare_parameter("frame_id", "map")
+
+        self.input_topic = self.get_parameter("input_topic").value
+        self.output_topic = self.get_parameter("output_topic").value
+        self.frame_id = self.get_parameter("frame_id").value
+
+        # group_id -> dict(cx, cy, axis_x, axis_y, half_length, last_seen)
+        self.active_groups = {}
+        self.lidar_tracks = {}      # lidar_id -> (x, y, last_seen)
+        self.last_robot_xy = None
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        self.sub = self.create_subscription(
+            String, self.input_topic, self.group_callback, 10)
+
+        self.create_subscription(
+            String, LIDAR_TOPIC, self.lidar_callback, 10)
+
+        self.pub = self.create_publisher(
+            PointCloud2, self.output_topic, 10)
+
+        # Publish on a timer rather than per-message, so all active groups
+        # appear together in one cloud. Publishing per-message would make
+        # each group overwrite the previous one, so only the most recent
+        # would ever reach the costmap - the same multi-track bug already
+        # fixed in predicted_person_cloud_node.py.
+        self.create_timer(1.0 / PUBLISH_RATE_HZ, self.publish_cloud)
+
+        self.get_logger().info("Social group cloud node started")
+        self.get_logger().info(f"Input : {self.input_topic}")
+        self.get_logger().info(f"Output: {self.output_topic}")
+        self.get_logger().info(f"Frame : {self.frame_id}")
+        self.get_logger().info(
+            f"O-space width: {O_SPACE_HALF_WIDTH * 2:.2f} m | "
+            f"body clearance: {BODY_CLEARANCE:.2f} m")
+        self.get_logger().info(
+            f"Robot keep-out: {ROBOT_KEEPOUT_RADIUS:.2f} m "
+            f"around '{ROBOT_FRAME}'")
+
+    def now(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    # -----------------------------------------------------------------
+    def lidar_callback(self, msg):
+        parts = msg.data.split(",")
+        if len(parts) < 3:
+            return
+        try:
+            lid = int(float(parts[0]))
+            x = float(parts[1])
+            y = float(parts[2])
+        except ValueError:
+            return
+        self.lidar_tracks[lid] = (x, y, self.now())
+
+    def find_anchor(self, x, y, exclude=None):
+        """Nearest lidar track to (x, y) within LIDAR_ANCHOR_GATE.
+        `exclude` prevents both members of a pair matching the same
+        track, which would otherwise collapse the zone to a point."""
+        best_id, best_d = None, LIDAR_ANCHOR_GATE
+        for lid, (lx, ly, _) in self.lidar_tracks.items():
+            if lid == exclude:
+                continue
+            d = math.hypot(x - lx, y - ly)
+            if d < best_d:
+                best_id, best_d = lid, d
+        return best_id
+
+    # -----------------------------------------------------------------
+    def group_callback(self, msg):
+        parts = msg.data.split(",")
+        if len(parts) < 9:
+            self.get_logger().warn(f"Invalid /social_groups msg: {msg.data}")
+            return
+
+        try:
+            group_id = parts[0].strip()
+            group_type = parts[1].strip()
+            cx = float(parts[2])
+            cy = float(parts[3])
+            axis_x = float(parts[4])
+            axis_y = float(parts[5])
+            half_length = float(parts[6])
+        except ValueError:
+            self.get_logger().warn(f"Parse failed: {msg.data}")
+            return
+
+        if group_type != "conversation":
+            # See NOT HANDLED YET in the module docstring.
+            return
+
+        # Recover the two members' positions from centre + axis +
+        # separation, so they can be matched to lidar anchors later.
+        separation = 2.0 * (half_length - SOURCE_ZONE_BUFFER)
+        norm = math.hypot(axis_x, axis_y)
+        if norm < 1e-6:
+            return
+        ax, ay = axis_x / norm, axis_y / norm
+        h = separation / 2.0
+
+        self.active_groups[group_id] = {
+            "member_a": (cx - h * ax, cy - h * ay),
+            "member_b": (cx + h * ax, cy + h * ay),
+            "last_seen": self.now(),
+            "camera_fresh": True,
+        }
+
+    # -----------------------------------------------------------------
+    def o_space_half_length(self, source_half_length):
+        """Recover the pair's raw separation from the published
+        half_length, then back off a body radius at each end so the zone
+        covers only the gap between them. See COUPLING in the docstring."""
+        separation = 2.0 * (source_half_length - SOURCE_ZONE_BUFFER)
+        return separation / 2.0 - BODY_CLEARANCE
+
+    def make_o_space_points(self, cx, cy, axis_x, axis_y, half_length):
+        """Fill an ellipse centred on the pair's midpoint, elongated along
+        their shared axis."""
+        points = []
+
+        norm = math.hypot(axis_x, axis_y)
+        if norm < 1e-6:
+            return points
+        ax, ay = axis_x / norm, axis_y / norm
+
+        a = half_length
+        b = O_SPACE_HALF_WIDTH
+
+        steps_u = int(a / POINT_SPACING)
+        steps_v = int(b / POINT_SPACING)
+
+        for iu in range(-steps_u, steps_u + 1):
+            u = iu * POINT_SPACING
+            for iv in range(-steps_v, steps_v + 1):
+                v = iv * POINT_SPACING
+                if (u / a) ** 2 + (v / b) ** 2 <= 1.0:
+                    # rotate local (u, v) onto the group's axis
+                    x = cx + u * ax - v * ay
+                    y = cy + u * ay + v * ax
+                    points.append((x, y, POINT_HEIGHT))
+
+        return points
+
+    # -----------------------------------------------------------------
+    def publish_cloud(self):
+        now = self.now()
+
+        # Expire cached lidar tracks.
+        for lid in [l for l, v in self.lidar_tracks.items()
+                    if now - v[2] > LIDAR_TRACK_TIMEOUT]:
+            del self.lidar_tracks[lid]
+
+        points = []
+        published = []
+        drop = []
+
+        for gid, g in self.active_groups.items():
+            camera_age = now - g["last_seen"]
+            camera_fresh = camera_age <= GROUP_TIMEOUT
+
+            if camera_fresh:
+                ax_pos, bx_pos = g["member_a"], g["member_b"]
+            else:
+                # Camera has gone quiet - hold the zone open only while
+                # BOTH members still have a lidar anchor, and move it to
+                # follow those anchors so it stays correct if the pair
+                # drifts. Either member losing its anchor ends the group.
+                if camera_age > MAX_LIDAR_ONLY_HOLD:
+                    drop.append((gid, "lidar-only hold expired"))
+                    continue
+
+                lid_a = self.find_anchor(*g["member_a"])
+                lid_b = self.find_anchor(*g["member_b"], exclude=lid_a)
+
+                if lid_a is None or lid_b is None:
+                    drop.append((gid, "lost lidar anchor"))
+                    continue
+
+                ax_pos = self.lidar_tracks[lid_a][:2]
+                bx_pos = self.lidar_tracks[lid_b][:2]
+
+                # Positions are now lidar-derived, so re-check the
+                # separation the camera path would have checked.
+                if math.hypot(ax_pos[0] - bx_pos[0],
+                              ax_pos[1] - bx_pos[1]) > CONV_MAX_DIST:
+                    drop.append((gid, "members moved apart"))
+                    continue
+
+                if g["camera_fresh"]:
+                    g["camera_fresh"] = False
+                    self.get_logger().info(
+                        f"Group {gid}: camera lost, holding zone on "
+                        f"lidar anchors {lid_a}/{lid_b}")
+
+                g["member_a"], g["member_b"] = ax_pos, bx_pos
+
+            cx = (ax_pos[0] + bx_pos[0]) / 2.0
+            cy = (ax_pos[1] + bx_pos[1]) / 2.0
+            dx, dy = bx_pos[0] - ax_pos[0], bx_pos[1] - ax_pos[1]
+            separation = math.hypot(dx, dy)
+
+            a = separation / 2.0 - BODY_CLEARANCE
+            if a < MIN_O_SPACE_HALF_LENGTH:
+                continue
+
+            points.extend(self.make_o_space_points(cx, cy, dx, dy, a))
+            published.append((gid, a, camera_fresh))
+
+        for gid, reason in drop:
+            del self.active_groups[gid]
+            self.get_logger().info(f"Group {gid} cleared - {reason}")
+
+        # --- robot keep-out ------------------------------------------
+        try:
+            tfm = self.tf_buffer.lookup_transform(
+                self.frame_id, ROBOT_FRAME,
+                rclpy.time.Time(), timeout=Duration(seconds=0.05))
+            self.last_robot_xy = (tfm.transform.translation.x,
+                                  tfm.transform.translation.y)
+        except Exception:
+            pass  # reuse last known pose
+
+        if self.last_robot_xy is not None and points:
+            rx, ry = self.last_robot_xy
+            r2 = ROBOT_KEEPOUT_RADIUS ** 2
+            before = len(points)
+            points = [p for p in points
+                      if (p[0] - rx) ** 2 + (p[1] - ry) ** 2 > r2]
+            removed = before - len(points)
+            if removed:
+                self.get_logger().info(
+                    f"Keep-out: removed {removed} point(s) within "
+                    f"{ROBOT_KEEPOUT_RADIUS:.2f} m of robot")
+
+        self.pub.publish(self.create_cloud(points))
+
+        if published:
+            desc = ", ".join(
+                f"{g}(len={2*a:.2f}m{'' if fresh else ',LIDAR-HELD'})"
+                for g, a, fresh in published)
+            self.get_logger().info(
+                f"Published {len(published)} zone(s): {desc} "
+                f"points={len(points)}")
+
+    # -----------------------------------------------------------------
+    def create_cloud(self, points):
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = self.frame_id
+
+        fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+
+        cloud = PointCloud2()
+        cloud.header = header
+        cloud.height = 1
+        cloud.width = len(points)
+        cloud.fields = fields
+        cloud.is_bigendian = False
+        cloud.point_step = 12
+        cloud.row_step = cloud.point_step * len(points)
+        cloud.data = b"".join(struct.pack("fff", x, y, z) for x, y, z in points)
+        cloud.is_dense = True
+        return cloud
+
+    def destroy_node(self):
+        self.pub.publish(self.create_cloud([]))
+        self.get_logger().info("Published empty cloud to clear costmap on shutdown")
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SocialGroupCloudNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+        pass
+    node.destroy_node()
+    try:
+        rclpy.shutdown()
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    main()
