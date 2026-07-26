@@ -409,7 +409,46 @@ class GroupFormationDetector(Node):
 
             speed_a = math.hypot(ta.vx, ta.vy)
             speed_b = math.hypot(tb.vx, tb.vy)
-            if speed_a > CONV_MAX_SPEED or speed_b > CONV_MAX_SPEED:
+            # ==========================================================
+            # THESIS MODIFICATION (speed check exempts confirmed pairs)
+            #
+            # The speed check exists to reject two people who merely
+            # walk past each other. But the velocity it reads is derived
+            # from camera positions, which are contaminated by the
+            # ROBOT'S OWN motion - the same ego-motion problem
+            # human_kf_predictor's rotation gate addresses for the
+            # predicted ellipse.
+            #
+            # Measured: with both people bolted in place in
+            # conversation_test.sdf, driving the robot toward them
+            # produced apparent speeds of 0.160-0.180 m/s, just over
+            # CONV_MAX_SPEED=0.15. Tellingly the two members disagreed
+            # in the same cycle (a=0.000 while b=0.180), which real
+            # motion would not produce for two static models.
+            #
+            # The effect was that approaching a conversation revoked its
+            # confirmation - defeating the sticky flag at exactly the
+            # moment it exists to help, since the flag is meant to carry
+            # a confirmed pair through the close pass.
+            #
+            # Fix: once a pair is confirmed, hold it on DISTANCE alone.
+            # The speed check still applies to unconfirmed pairs, where
+            # it does its intended job of rejecting passers-by.
+            #
+            # KNOWN CONSEQUENCE (accepted): a confirmed pair that
+            # genuinely starts walking together keeps its zone, since
+            # distance stays small. Arguably correct - a moving group is
+            # still a group - but it does mean nothing revokes the zone
+            # short of them separating. The alternative considered was
+            # gating the speed check on the robot's own /odom velocity,
+            # which fixes the root cause rather than special-casing, and
+            # would also let unconfirmed pairs form while the robot
+            # moves. Worth revisiting if false positives appear.
+            # ==========================================================
+            already_confirmed = frozenset((id_a, id_b)) in self.confirmed_pairs
+
+            if not already_confirmed and (speed_a > CONV_MAX_SPEED
+                                          or speed_b > CONV_MAX_SPEED):
                 self._clear_close_since(ta, tb, id_a, id_b)
                 continue
 
