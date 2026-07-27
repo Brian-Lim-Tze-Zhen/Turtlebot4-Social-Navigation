@@ -10,6 +10,12 @@ from std_msgs.msg import String, Header
 from sensor_msgs.msg import PointCloud2, PointField
 
 
+# Below this speed a person is treated as stationary and marked with a
+# symmetric disk rather than a directional ellipse. See the deadband
+# comment in publish_cloud() for the measurements behind this value.
+STATIONARY_SPEED_DEADBAND = 0.05   # m/s
+
+
 class PredictedPersonCloudNode(Node):
     def __init__(self):
         super().__init__("predicted_person_cloud_node")
@@ -82,12 +88,21 @@ class PredictedPersonCloudNode(Node):
             current_x = float(parts[2])
             current_y = float(parts[3])
 
+            vx = float(parts[4])
+            vy = float(parts[5])
+
             predicted_x = float(parts[6])
             predicted_y = float(parts[7])
 
         except ValueError:
             self.get_logger().warn(f"Parse failed: {msg.data}")
             return
+
+        # Field [9] is human_kf_predictor's rotation-gate flag: it is 1
+        # when |odom angular.z| exceeded rot_gate_threshold, meaning the
+        # KF velocity EMA was frozen because the robot's own rotation was
+        # contaminating the camera-derived position estimate.
+        rotation_gated = len(parts) > 9 and parts[9].strip() == "1"
 
         # Just record the latest state for this track. Actual cloud
         # construction/publishing happens in publish_cloud() so that
@@ -96,6 +111,8 @@ class PredictedPersonCloudNode(Node):
         self.active_tracks[track_id] = {
             "current": (current_x, current_y),
             "predicted": (predicted_x, predicted_y),
+            "speed": math.hypot(vx, vy),
+            "rotation_gated": rotation_gated,
             "last_seen": self.get_ros_time_seconds(),
         }
 
@@ -169,10 +186,50 @@ class PredictedPersonCloudNode(Node):
             # started), heading is undefined, so we fall back to a small
             # symmetric disk for that one cycle.
             # ==========================================================
+            # ==========================================================
+            # THESIS MODIFICATION (stationary velocity deadband)
+            #
+            # The disk fallback below was gated on EXACT float equality
+            # (dx == 0.0 and dy == 0.0), so it effectively never fired.
+            # Camera-derived positions jitter, the KF turns that jitter
+            # into velocity, and any non-zero value takes the ellipse
+            # branch - giving a STATIONARY person a 2.2m directional
+            # obstacle (a=1.10, shifted forward by a) pointing in a
+            # noise-determined direction.
+            #
+            # Measured noise floor with both people bolted in place in
+            # conversation_test.sdf, robot driving and rotating:
+            #   gentle motion : max 0.028 m/s
+            #   with rotation : max 0.040 m/s
+            # A slow walker is ~0.3 m/s, so 0.05 sits an order of
+            # magnitude above the noise and well below genuine walking.
+            #
+            # Below the deadband, treat the person as stationary and use
+            # the symmetric disk - which is the correct shape when there
+            # is no real direction of travel to encode.
+            # ==========================================================
             dx = predicted_x - current_x
             dy = predicted_y - current_y
 
-            if dx == 0.0 and dy == 0.0:
+            # ==========================================================
+            # THESIS MODIFICATION (rotation gate)
+            #
+            # The speed deadband above handles the noise floor measured
+            # during gentle motion (max 0.028 m/s) but NOT rotation:
+            # with the robot turning, a bolted-down person read
+            # -0.11 m/s, three times the deadband and close enough to
+            # slow-walking speed that raising the threshold to cover it
+            # would suppress genuine pedestrians.
+            #
+            # human_kf_predictor already knows when this is happening -
+            # it freezes its own velocity EMA and reports the fact on
+            # field [9]. Honour that directly: while the gate is active
+            # the velocity is untrustworthy whatever its magnitude, so
+            # force the symmetric disk rather than pointing a 2.2m
+            # ellipse in an ego-motion-determined direction.
+            # ==========================================================
+            if (t.get("rotation_gated", False)
+                    or t.get("speed", 0.0) < STATIONARY_SPEED_DEADBAND):
                 points.extend(
                     self.make_disk_points(
                         predicted_x,
