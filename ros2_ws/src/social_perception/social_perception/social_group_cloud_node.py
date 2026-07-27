@@ -313,9 +313,18 @@ class SocialGroupCloudNode(Node):
         ax, ay = axis_x / norm, axis_y / norm
         h = separation / 2.0
 
+        existing = self.active_groups.get(group_id, {})
+
         self.active_groups[group_id] = {
             "member_a": (cx - h * ax, cy - h * ay),
             "member_b": (cx + h * ax, cy + h * ay),
+            # Anchor ids are LEARNED while the camera is fresh (see
+            # publish_cloud) and reused directly once it goes blind, so a
+            # lost member is not re-matched by proximity to whatever
+            # happens to be nearby - which is how a member previously
+            # ended up 0.9m away, i.e. locked onto the OTHER person.
+            "anchor_a": existing.get("anchor_a"),
+            "anchor_b": existing.get("anchor_b"),
             "last_seen": self.now(),
             "camera_fresh": True,
         }
@@ -375,6 +384,22 @@ class SocialGroupCloudNode(Node):
 
             if camera_fresh:
                 ax_pos, bx_pos = g["member_a"], g["member_b"]
+
+                # Re-bind anchors continuously while positions are
+                # trustworthy. Previously anchors were only looked up
+                # AFTER the camera went blind, by which point the
+                # remembered position had drifted relative to the moving
+                # lidar centroid - measured misses of 0.30/0.34/0.36m
+                # against a 0.35m gate even when both tracks were
+                # present, and 0.90m once a member's own track had gone.
+                # Binding while fresh means the association is made
+                # under good conditions and simply carried forward.
+                a_id = self.find_anchor(*ax_pos)
+                b_id = self.find_anchor(*bx_pos, exclude=a_id)
+                if a_id is not None:
+                    g["anchor_a"] = a_id
+                if b_id is not None:
+                    g["anchor_b"] = b_id
             else:
                 # Camera has gone quiet - hold the zone open only while
                 # BOTH members still have a lidar anchor, and move it to
@@ -384,11 +409,27 @@ class SocialGroupCloudNode(Node):
                     drop.append((gid, "lidar-only hold expired"))
                     continue
 
-                lid_a = self.find_anchor(*g["member_a"])
-                lid_b = self.find_anchor(*g["member_b"], exclude=lid_a)
+                # Use the anchors learned while the camera was fresh.
+                # Only fall back to a proximity search if one was never
+                # bound - and never re-search for an anchor that has
+                # simply disappeared, since the nearest remaining track
+                # is most likely the OTHER member.
+                lid_a = g.get("anchor_a")
+                lid_b = g.get("anchor_b")
 
-                if lid_a is None or lid_b is None:
-                    drop.append((gid, "lost lidar anchor"))
+                if lid_a is None:
+                    lid_a = self.find_anchor(*g["member_a"], exclude=lid_b)
+                if lid_b is None:
+                    lid_b = self.find_anchor(*g["member_b"], exclude=lid_a)
+
+                if lid_a not in self.lidar_tracks:
+                    drop.append((gid, f"anchor {lid_a} for member a gone"))
+                    continue
+                if lid_b not in self.lidar_tracks:
+                    drop.append((gid, f"anchor {lid_b} for member b gone"))
+                    continue
+                if lid_a == lid_b:
+                    drop.append((gid, "both members collapsed onto one anchor"))
                     continue
 
                 ax_pos = self.lidar_tracks[lid_a][:2]
