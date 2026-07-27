@@ -82,6 +82,33 @@ class HumanTrackKF:
         #   too jittery.
         # ==========================================================
         self.smooth_alpha = 0.12
+
+        # ==========================================================
+        # THESIS MODIFICATION (asymmetric EMA decay)
+        #
+        # smooth_alpha=0.12 moves the filtered velocity only 12% toward
+        # each new reading, so it takes ~18 updates (~3s at 6Hz, longer
+        # under RTF sag) to decay 90%. That is the intended behaviour
+        # while WALKING - it suppresses the jitter that would otherwise
+        # be amplified by the prediction horizon - but it means velocity
+        # lingers long after motion stops.
+        #
+        # Observed: a bolted-down person read 0.14 m/s with the robot
+        # parked and the rotation gate INACTIVE, decaying only slowly
+        # toward zero. That is residue accumulated during an earlier
+        # motion phase, not live contamination. At 0.14 it is half of
+        # slow-walking speed, so it clears predicted_person_cloud_node's
+        # 0.05 stationary deadband and produces a 2.2m directional
+        # ellipse for someone standing still.
+        #
+        # Fix: use a much higher alpha when the raw velocity is SMALLER
+        # in magnitude than the current filtered estimate. Slowing down
+        # and stopping are tracked quickly; speeding up stays smoothed.
+        # This mirrors the existing direction-reversal reset below,
+        # which already treats "the filter is confidently wrong" as a
+        # case for abandoning smoothing rather than easing into it.
+        # ==========================================================
+        self.decay_alpha = 0.75
         self.vx_filt = None
         self.vy_filt = None
 
@@ -164,7 +191,16 @@ class HumanTrackKF:
                     self.vx_filt = vx_raw
                     self.vy_filt = vy_raw
                 else:
-                    a = self.smooth_alpha
+                    # Asymmetric alpha - see decay_alpha above. Decay
+                    # fast, rise slow.
+                    raw_speed = (vx_raw ** 2 + vy_raw ** 2) ** 0.5
+                    filt_speed = (self.vx_filt ** 2 + self.vy_filt ** 2) ** 0.5
+
+                    if raw_speed < filt_speed:
+                        a = self.decay_alpha
+                    else:
+                        a = self.smooth_alpha
+
                     self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
                     self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
 
