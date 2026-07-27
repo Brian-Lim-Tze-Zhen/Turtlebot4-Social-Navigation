@@ -258,6 +258,36 @@ class GroupFormationDetector(Node):
         # both the real photo (0.587) and the actual synthetic crop
         # (0.564) - both now correctly favor "facing each other".
         # ==========================================================
+        # ==========================================================
+        # KNOWN LIMITATION - single-crop facing classification does not
+        # work from a side-on viewpoint. Measured against staged ground
+        # truth (people rotated in place, crop verified by eye):
+        #
+        #   prompt pair                    back-to-back      facing
+        #   facing / not facing            0.664 "facing"    0.697 "facing"
+        #   from the front / from behind   0.924 "behind"    0.743 "behind"
+        #
+        # Both pairs return the SAME answer for both conditions. The
+        # first has no discrimination at all (0.03 gap); the second
+        # discriminates something (0.18 gap) but not the thing needed.
+        #
+        # The cause is geometric, not phrasing. Viewed side-on - which
+        # is where the robot stands relative to a conversing pair - a
+        # facing pair presents one front and one back, and so does a
+        # back-to-back pair. There is no single-crop appearance cue that
+        # separates them from this viewpoint.
+        #
+        # Reverted to the original pair pending a better approach.
+        # Candidates: per-person crops (classify each individual's
+        # front/back separately, then reason about the pair
+        # geometrically), or a non-visual facing estimate. NOTE that
+        # everything downstream currently trusts this classification -
+        # a wrong confirmation now becomes a phantom costmap zone via
+        # social_group_cloud_node, not just a wrong log line.
+        #
+        # Index [0] must remain the "conversation" answer -
+        # classify_facing returns best_idx == 0.
+        # ==========================================================
         self.clip_prompts = [
             "two people facing each other",
             "two people not facing each other",
