@@ -262,6 +262,32 @@ def compute_metrics(path, person):
                 min_dist = d
                 min_at = (t, px, py, q[0], q[1])
 
+    # --- THESIS ADDITION: early-commitment + pass-side metrics ---
+    COMMIT_DEV_THRESH = 0.20   # m
+
+    commit_dist = None
+    commit_t = None
+    dev_at_min = None
+
+    if straight > 1e-6:
+        ux, uy = (x1 - x0) / straight, (y1 - y0) / straight
+
+        for t, px, py in path:
+            rx, ry = px - x0, py - y0
+            dev = -rx * uy + ry * ux           # signed; + = left
+            if abs(dev) > COMMIT_DEV_THRESH:
+                commit_t = t
+                if person:
+                    q = interp_person(person, t)
+                    if q is not None:
+                        commit_dist = math.hypot(px - q[0], py - q[1])
+                break
+
+        if min_at is not None:
+            _, mpx, mpy, _, _ = min_at
+            rx, ry = mpx - x0, mpy - y0
+            dev_at_min = -rx * uy + ry * ux
+
     duration = path[-1][0] - path[0][0]
 
     return {
@@ -271,6 +297,9 @@ def compute_metrics(path, person):
         "straight_line": straight,
         "path_ratio": length / straight if straight > 1e-6 else float("nan"),
         "max_lateral_dev": max_dev,
+        "commit_dist": commit_dist,
+        "commit_t": commit_t,
+        "dev_at_min": dev_at_min,
         "duration_s": duration,
         "mean_speed": length / duration if duration > 0 else float("nan"),
         "n_odom": len(path),
@@ -319,16 +348,20 @@ def analyse(path):
 
 def print_report(results):
     print()
-    print("=" * 78)
+    print("=" * 96)
     print("RTF-SAFE METRICS (geometric — valid regardless of real-time factor)")
-    print("=" * 78)
-    hdr = f"{'trial':<28} {'min_dist':>9} {'path_len':>9} {'ratio':>7} {'lat_dev':>8}"
+    print("=" * 96)
+    hdr = (f"{'trial':<28} {'min_dist':>9} {'path_len':>9} {'ratio':>7} {'lat_dev':>8} "
+           f"{'commit_d':>9} {'side_dev':>9}")
     print(hdr)
-    print("-" * 78)
+    print("-" * 96)
     for m in results:
         md = f"{m['min_distance']:.3f}" if m["min_distance"] is not None else "n/a"
+        cd = f"{m.get('commit_dist'):.3f}" if m.get("commit_dist") is not None else "n/a"
+        sd = f"{m.get('dev_at_min'):+.3f}" if m.get("dev_at_min") is not None else "n/a"
         print(f"{m['trial']:<28} {md:>9} {m['path_length']:>9.3f} "
-              f"{m['path_ratio']:>7.3f} {m['max_lateral_dev']:>8.3f}")
+              f"{m['path_ratio']:>7.3f} {m['max_lateral_dev']:>8.3f} "
+              f"{cd:>9} {sd:>9}")
 
     print()
     print("=" * 78)
@@ -373,8 +406,8 @@ def fmt_stat(vals):
 
 def write_csv(results, out_path):
     cols = ["trial", "min_distance", "path_length", "straight_line",
-            "path_ratio", "max_lateral_dev", "duration_s", "mean_speed",
-            "n_odom", "n_person"]
+            "path_ratio", "max_lateral_dev", "commit_dist", "dev_at_min",
+            "duration_s", "mean_speed", "n_odom", "n_person"]
     with open(out_path, "w") as f:
         f.write(",".join(cols) + "\n")
         for m in results:
