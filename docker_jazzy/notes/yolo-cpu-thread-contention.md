@@ -100,3 +100,119 @@ effect of the two).
   variable treatment, or whether the existing `.bashrc`-level caps
   already cover it (they should, since they're process-wide environment
   variables, not specific to `yolo_detector.py`).
+
+## Update 2026-07-29: both hypotheses in this file were measured and are wrong
+
+Everything above describes two candidate causes for the RTF problem:
+YOLO's CPU thread contention (this file's original subject, later
+demoted to "secondary contributor") and Gazebo's GUI rendering (later
+promoted to "the primary cause"). Both were measured directly on
+2026-07-29. **Neither is the dominant cause.**
+
+### Measurement method
+
+`/clock` publishes once per Gazebo physics step. `empty_human.sdf` sets
+`max_step_size` to 0.003, so **RTF 1.0 corresponds to ~333 Hz on
+`/clock`**. This gives a direct, one-command RTF probe:
+
+```bash
+ros2 topic hz /clock
+
+```
+
+An equivalent probe, when the perception pipeline is running:
+`predicted_person_cloud_node.py` publishes on a 10 Hz sim-time timer,
+so `ros2 topic hz /predicted_person_cloud` divided by 10 is the RTF.
+
+Note the two probes have **different denominators** (333 vs 10). Mixing
+them up produces nonsense — this was briefly done during the session
+and made a 0.43 RTF look like 0.14.
+
+### Results
+
+| Configuration | RTF |
+|---|---|
+
+| Full stack, Gazebo GUI enabled | ~0.39 |
+| Full stack, headless (`headless:=true`) | ~0.41 |
+| Headless, `yolo_detector.py` killed | ~0.43 |
+
+- **Disabling the GUI is worth ~5%**, not the large effect claimed
+  above. The earlier "GUI is the primary cause" conclusion came from
+  comparing a bare `gz sim -s -r <world>.sdf` against the full stack —
+  which changes far more than just the GUI.
+
+- **Killing YOLO entirely is worth ~2 percentage points**, i.e. nothing.
+  The 249% CPU figure for `yolo_detector.py` is real but irrelevant.
+
+### Why the reasoning was wrong
+
+Gazebo's physics loop is **single-threaded**. Its speed is bounded by
+how fast one core can step it, not by how many cores are free. YOLO
+spreading across other cores was never competing for the resource that
+actually gates the simulation. Capping YOLO's thread pools protected
+something that could not benefit from the protection.
+
+This is the core misconception worth remembering: *high CPU usage by
+process A does not imply process B is being starved*, when B is
+single-threaded and the machine has spare cores. `htop` showing all
+cores busy is not evidence of contention with a single-threaded
+consumer.
+
+### What the remaining ~0.57 actually is
+
+By elimination: the robot's own simulation cost. `gz_ros2_control`,
+the sensor plugins (RPLidar, OAK-D RGB + depth), and the ros_gz bridge
+traffic. Rendering the depth and RGB streams every physics step is the
+most likely single contributor.
+
+**This was deliberately not pursued further.** Reducing it means
+lowering camera resolution or sensor update rates, which changes what
+the perception pipeline sees, which breaks comparability with all
+existing recorded bags. That is a much larger decision than a launch
+flag and should not be made mid-experiment.
+
+### What to keep, and what to revisit
+
+**Keep headless mode** (`headless:=true`, see
+`launch_overrides/sim.launch.py` and `notes/` on that change). Although
+the throughput gain is small, the **jitter reduction is large and
+real**:
+
+| | mean rate | min | max | std dev |
+|---|---|---|---|---|
+
+| GUI | 3.9 Hz | 0.000 s | 0.422 s | 0.078 |
+| headless | 4.1 Hz | 0.198 s | 0.295 s | 0.024 |
+
+Std dev dropped ~3x and the `min: 0.000s` bursts disappeared entirely.
+Under the GUI the simulation stalled and caught up in clumps; headless
+it steps evenly. Bursty stepping is exactly what causes control loops
+to miss their rate, and it was measurably inflating run durations in
+the slower (ablation) condition — 38–54 s under the GUI vs 34–40 s
+headless across both conditions.
+
+**Revisit the thread caps.** `OMP_NUM_THREADS=2` and friends (Dockerfile
+section 11) plus `torch.set_num_threads(2)` in `yolo_detector.py` were
+set to protect an RTF that they do not protect. On a 16-thread machine
+this is likely leaving YOLO inference speed on the table for no benefit.
+
+Suggested next step, **not yet performed**: baseline
+`ros2 topic hz /person_positions_map` at 2 threads, then try 6 and
+re-measure, watching `/clock` to confirm nothing else degrades. Open a
+fresh shell after editing — BLAS libraries read these variables at
+process start, so an existing terminal keeps the old values and would
+show a misleading "no change" result.
+
+Do NOT change this mid-experiment: faster inference means more frequent
+detections into the KF, which may alter prediction behaviour and
+confound any in-progress trial set.
+
+### Impact on recorded results
+
+None. All conclusions in the evaluation rest on RTF-safe geometric
+metrics (`min_distance`, `path_ratio`, `commit_dist`), which are
+computed from positions rather than timestamps and are unaffected by
+simulation speed. `analyse_avoidance.py` separates these from
+RTF-sensitive metrics (`duration_s`, `mean_speed`) precisely for this
+reason.
