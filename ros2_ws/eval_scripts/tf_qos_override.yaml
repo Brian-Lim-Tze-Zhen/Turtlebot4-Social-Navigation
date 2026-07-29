@@ -1,0 +1,4 @@
+/tf:
+  durability: volatile
+  reliability: reliable
+  history: keep_all
