@@ -43,3 +43,4 @@ ros2_ws/debug_notes_2026-06-24.md
 ros2_ws/bags/
 ros2_ws/*.png
 ros2_ws/*.jpg
+ros2_ws/eval_plots/
