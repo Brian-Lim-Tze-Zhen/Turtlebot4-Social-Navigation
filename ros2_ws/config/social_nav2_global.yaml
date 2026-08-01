@@ -67,10 +67,10 @@ controller_server:
       # so executed trajectories were systematically ~2x slower than
       # planned - a direct cause of late/close avoidance.
       vx_max: 0.26
-      # TONIGHT FIX: vx_min -0.35 -> 0.0.
-      # Removes reverse from MPPI's action space entirely (measured
-      # reversals peaked at -0.116 m/s). Recovery behaviors (backup,
-      # spin) in the behavior server remain available if truly stuck.
+      # BASELINE: vx_min -0.35 -> -0.26.
+      # Reverse is retained in MPPI's action space, capped to match
+      # velocity_smoother's min_velocity[0] (-0.26). Measured reversals
+      # peaked at -0.116 m/s, so the cap is never the binding limit.
       vx_min: -0.26
       vy_max: 0.5
       # TONIGHT FIX (restored lost tuning): wz_max 1.9 -> 1.5.
@@ -231,8 +231,12 @@ global_costmap:
   global_costmap:
     ros__parameters:
       enable_stamped_cmd_vel: true
-      # TONIGHT FIX: 1.0 -> 4.0 so the global path tracks the moving
-      # person's predicted lane with less lag.
+      # BASELINE: 1.0 Hz, unchanged from the TurtleBot4 template.
+      # Nav2's default BT wraps ComputePathToPose in a RateController
+      # at 1 Hz, so the planner replans at 1 Hz regardless — raising
+      # this alone would not reduce plan lag. Both would need raising
+      # together. At 0.2 m/s person speed the predicted lane is <=0.2 m
+      # stale per cycle, small against the ellipse and inflation.
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
@@ -293,9 +297,11 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # TONIGHT FIX: 4.0/0.45 -> 2.0/1.0 so the global planner
-        # gives the person's predicted lane a real berth instead of
-        # hugging its edge.
+        # BASELINE: 4.0/0.45 -> 3.0/1.0. Wider, gentler global
+        # inflation so the planner routes around the predicted lane
+        # rather than hugging its edge. Local costmap keeps 1.0/1.0
+        # (softer gradient) — global sets the routing berth, local
+        # governs executed passing distance.
         cost_scaling_factor: 3.0
         inflation_radius: 1.0
       always_send_full_costmap: true
