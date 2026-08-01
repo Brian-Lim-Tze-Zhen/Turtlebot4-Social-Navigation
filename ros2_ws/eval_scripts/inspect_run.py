@@ -119,7 +119,7 @@ def main():
         sys.exit(f"[{name}] no /odom messages — nothing to plot")
 
     robot = aa.robot_path_in_map(odom_list, m2o)
-    person = aa.person_track(data["/person_ground_truth"])
+    person_tracks = aa.person_tracks_all(data["/person_ground_truth"])
 
     if len(robot) < 2:
         sys.exit(f"[{name}] insufficient /odom samples — nothing to plot")
@@ -136,18 +136,41 @@ def main():
 
     times = []
     speeds = []
-    seps = []
     devs = []
+    # THESIS MODIFICATION: one separation series per tracked person,
+    # not just person 0 - a multi-person bag used to silently plot only
+    # the first person, hiding the actual closest approach if it
+    # happened to be to someone else (see FIX 1 context: min_dist=0.387
+    # for bags/multi_full_probe was to person 1, invisible when only
+    # person 0's separation was ever computed here).
+    seps_per_person = {idx: [] for idx in person_tracks}
 
     for (t, px, py), (_, om) in zip(robot, odom_list):
         times.append(t - t0)
         speeds.append(om.twist.twist.linear.x)
 
-        q = aa.interp_person(person, t) if person else None
-        seps.append(math.hypot(px - q[0], py - q[1]) if q is not None else None)
+        for idx, track in person_tracks.items():
+            q = aa.interp_person(track, t) if track else None
+            seps_per_person[idx].append(
+                math.hypot(px - q[0], py - q[1]) if q is not None else None
+            )
 
         rx, ry = px - x0, py - y0
         devs.append(-rx * uy + ry * ux)   # signed; + = left
+
+    # Whichever person sets the overall minimum separation - matches
+    # analyse_avoidance.compute_metrics()'s closest_idx, used below so
+    # the commit_dist cross-check compares against the same person.
+    min_sep_per_person = {}
+    for idx, sv in seps_per_person.items():
+        valid = [s for s in sv if s is not None]
+        min_sep_per_person[idx] = min(valid) if valid else None
+
+    closest_idx = min(
+        (idx for idx in min_sep_per_person if min_sep_per_person[idx] is not None),
+        key=lambda idx: min_sep_per_person[idx],
+        default=None,
+    )
 
     # --- /plan series ---
     # NOTE: use msg.header.stamp here, not the bag-recording stamp the
@@ -168,15 +191,22 @@ def main():
     # =================================================================
     print(f"[{name}]")
 
-    encounter = [(t, s, v) for t, s, v in zip(times, seps, speeds)
-                 if s is not None and s < ENCOUNTER_DIST]
-    if encounter:
-        t_min, s_min, v_min = min(encounter, key=lambda r: r[2])
-        print(f"  min speed during encounter (sep<{ENCOUNTER_DIST:.1f}m): "
-              f"{v_min:.3f} m/s at t={t_min:.2f}s, separation={s_min:.3f} m")
-    else:
-        print(f"  no samples with separation < {ENCOUNTER_DIST:.1f} m — "
-              f"no encounter window found")
+    # THESIS MODIFICATION: per-person, not just person 0 - reporting only
+    # person 0's encounter used to print a misleading number whenever
+    # person 0's own closest approach happened before the robot had even
+    # started moving.
+    for idx in sorted(seps_per_person):
+        sv = seps_per_person[idx]
+        encounter = [(t, s, v) for t, s, v in zip(times, sv, speeds)
+                     if s is not None and s < ENCOUNTER_DIST]
+        if encounter:
+            t_min, s_min, v_min = min(encounter, key=lambda r: r[2])
+            print(f"  person {idx}: min speed during encounter "
+                  f"(sep<{ENCOUNTER_DIST:.1f}m): {v_min:.3f} m/s at "
+                  f"t={t_min:.2f}s, separation={s_min:.3f} m")
+        else:
+            print(f"  person {idx}: no samples with separation < "
+                  f"{ENCOUNTER_DIST:.1f} m — no encounter window found")
 
     print(f"  /plan messages: {len(plan_msgs)}")
     if len(plan_lengths) >= 2:
@@ -190,17 +220,24 @@ def main():
     else:
         print("  plan length std dev: n/a (no /plan messages with poses)")
 
+    # Cross-check against whichever person sets the overall min
+    # separation, matching analyse_avoidance.compute_metrics()'s
+    # commit_dist definition (closest_idx there, same here).
+    commit_seps = seps_per_person.get(closest_idx) if closest_idx is not None else None
+
     commit_t = None
     commit_sep = None
-    for t, dev, s in zip(times, devs, seps):
+    for i, (t, dev) in enumerate(zip(times, devs)):
         if abs(dev) > COMMIT_DEV_THRESH:
             commit_t = t
-            commit_sep = s
+            if commit_seps is not None:
+                commit_sep = commit_seps[i]
             break
     if commit_t is not None:
         sep_str = f"{commit_sep:.3f} m" if commit_sep is not None else "n/a"
+        who = f", person {closest_idx}" if len(person_tracks) > 1 and closest_idx is not None else ""
         print(f"  |lateral dev| first exceeds {COMMIT_DEV_THRESH:.2f} m at "
-              f"t={commit_t:.2f}s, separation={sep_str} "
+              f"t={commit_t:.2f}s, separation={sep_str}{who} "
               f"(cross-check vs analyse_avoidance.py's commit_dist)")
     else:
         print(f"  lateral deviation never exceeds {COMMIT_DEV_THRESH:.2f} m")
@@ -219,9 +256,11 @@ def main():
     axes[0].set_ylabel("Speed (m/s)")
     axes[0].set_title("Robot forward speed")
 
-    sep_t = [t for t, s in zip(times, seps) if s is not None]
-    sep_v = [s for s in seps if s is not None]
-    axes[1].plot(sep_t, sep_v)
+    for idx in sorted(seps_per_person):
+        sv = seps_per_person[idx]
+        sep_t = [t for t, s in zip(times, sv) if s is not None]
+        sep_v = [s for s in sv if s is not None]
+        axes[1].plot(sep_t, sep_v, label=f"person {idx}")
     axes[1].axhline(ENCOUNTER_DIST, color="orange", linestyle="--",
                     linewidth=1, label=f"encounter window ({ENCOUNTER_DIST:.1f} m)")
     axes[1].set_ylabel("Separation (m)")
