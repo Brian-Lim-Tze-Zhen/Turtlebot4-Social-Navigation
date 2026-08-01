@@ -13,6 +13,12 @@ from std_msgs.msg import String, Header
 from sensor_msgs.msg import PointCloud2, PointField
 
 
+# Below this speed a person is treated as stationary and marked with a
+# symmetric disk rather than a directional ellipse. See the deadband
+# comment in publish_cloud() for the measurements behind this value.
+STATIONARY_SPEED_DEADBAND = 0.05   # m/s
+
+
 class PredictedPersonCloudNode(Node):
     def __init__(self):
         super().__init__("predicted_person_cloud_node")
@@ -140,14 +146,20 @@ class PredictedPersonCloudNode(Node):
             current_x = float(parts[2])
             current_y = float(parts[3])
 
+            vx = float(parts[4])
+            vy = float(parts[5])
+
             predicted_x = float(parts[6])
             predicted_y = float(parts[7])
 
         except ValueError:
             self.get_logger().warn(f"Parse failed: {msg.data}")
             return
-        
-        # Rotation gate flag passed from human_kf_predictor
+
+        # Field [9] is human_kf_predictor's rotation-gate flag: it is 1
+        # when |odom angular.z| exceeded rot_gate_threshold, meaning the
+        # KF velocity EMA was frozen because the robot's own rotation was
+        # contaminating the camera-derived position estimate.
         rotation_gated = len(parts) > 9 and parts[9].strip() == "1"
 
         # Compute raw heading from current -> predicted displacement.
@@ -193,10 +205,11 @@ class PredictedPersonCloudNode(Node):
         self.active_tracks[track_id] = {
             "current": (current_x, current_y),
             "predicted": (predicted_x, predicted_y),
+            "speed": math.hypot(vx, vy),
+            "rotation_gated": rotation_gated,
             "last_seen": self.get_ros_time_seconds(),
             "heading_sin": s,
             "heading_cos": c,
-            "rotation_gated": rotation_gated,   # <-- add this
         }
 
     def publish_cloud(self):
@@ -270,70 +283,51 @@ class PredictedPersonCloudNode(Node):
             # symmetric disk for that one cycle.
             # ==========================================================
             # ==========================================================
-            # THESIS MODIFICATION (rotation gate fallback)
+            # THESIS MODIFICATION (rotation gate + stationary deadband)
             #
-            # When human_kf_predictor reports the robot is rotating fast
-            # enough to have frozen the velocity EMA (rotation_gated=True),
-            # the heading carried in this track is stale/frozen and should
-            # not be trusted for a directional obstacle right now. Force
-            # the fallback to a symmetric disk instead of the ellipse for
-            # as long as the gate is active, so a frozen-but-possibly-wrong
-            # heading can't point the ellipse into the robot's own escape
-            # route and trap it.
+            # Two independent reasons to fall back to the symmetric disk
+            # instead of the directional ellipse:
             #
-            # This check must come before the heading_sin/cos check below,
-            # since a track can have a valid smoothed heading AND be
-            # currently rotation-gated at the same time.
+            # 1. Rotation gate (main): human_kf_predictor freezes its
+            #    velocity EMA while the robot rotates fast enough that
+            #    ego-motion contaminates the camera-derived position
+            #    estimate (field [9] on /predicted_person_positions).
+            #    The heading carried in this track is stale/frozen and
+            #    should not drive a directional obstacle right now.
+            #
+            # 2. Stationary speed deadband (feature): the old trigger was
+            #    exact float equality (dx == 0.0 and dy == 0.0), which
+            #    effectively never fired - camera jitter always produces
+            #    some non-zero displacement. Measured noise floor with
+            #    people bolted in place in conversation_test.sdf: max
+            #    0.028 m/s gentle motion, 0.040 m/s with robot rotating.
+            #    STATIONARY_SPEED_DEADBAND=0.05 sits an order of
+            #    magnitude above that noise and well below a genuine
+            #    ~0.3 m/s walking pace.
+            #
+            # Either condition forces the disk. When rotation-gated,
+            # still bias the disk toward the last-smoothed heading
+            # rather than zero - gating heading to 0.0 made the lateral
+            # pass-side bias below disappear at exactly the moment it's
+            # needed most (swerve onset), confirmed in testing.
             # ==========================================================
             rotation_gated = t.get("rotation_gated", False)
+            stationary = t.get("speed", 0.0) < STATIONARY_SPEED_DEADBAND
+            use_ellipse = not (rotation_gated or stationary)
 
-            if rotation_gated:
-                use_ellipse = False
-                # ==========================================================
-                # THESIS MODIFICATION (rotation-gate bias fallback)
-                #
-                # rotation_gated forces the safe symmetric-disk shape
-                # (we still distrust a freshly recomputed heading while
-                # the robot is rotating - ego-motion contaminates the
-                # velocity estimate). But the swerve maneuver itself is
-                # what causes the robot to rotate in the first place, so
-                # gating heading to 0.0 here made the lateral pass-side
-                # bias (below) disappear at exactly the moment it was
-                # needed most - producing a brief left/right hesitation
-                # right at swerve onset, confirmed in testing.
-                #
-                # Fix: reuse the last-smoothed heading from before the
-                # gate activated (callback() keeps updating heading_sin/
-                # heading_cos regardless of the gate) purely to pick
-                # which side to bias the disk toward. This is safe even
-                # if that heading is a cycle or two stale: worst case we
-                # bias toward the wrong side for one fallback cycle,
-                # forfeiting this cycle's early-decision advantage - it
-                # does not create a false-safe gap, since disk radius
-                # and the keep-out filter bound the geometry the same
-                # way regardless of bias direction.
-                # ==========================================================
-                if "heading_sin" in t:
-                    heading = math.atan2(t["heading_sin"], t["heading_cos"])
-                else:
-                    heading = None  # no prior heading yet; skip bias
-            # Use the pre-smoothed heading stored in callback()
-            # instead of recomputing raw atan2 every tick.
-            elif "heading_sin" in t:
+            if "heading_sin" in t:
                 heading = math.atan2(t["heading_sin"], t["heading_cos"])
-                use_ellipse = True
+            elif use_ellipse:
+                heading = math.atan2(predicted_y - current_y, predicted_x - current_x)
             else:
-                dx = predicted_x - current_x
-                dy = predicted_y - current_y
-                use_ellipse = (dx != 0.0 or dy != 0.0)
-                heading = math.atan2(dy, dx) if use_ellipse else 0.0
+                heading = None  # no prior heading yet; skip bias
 
             if not use_ellipse:
                 disk_cx = predicted_x
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.20 # matches ellipse b=0.50 below
+                    lateral_bias = 0.40  # matches ellipse b=0.40 below
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -347,13 +341,14 @@ class PredictedPersonCloudNode(Node):
                     )
                 )
             else:
-                # Ellipse is centered directly on the predicted position
-                # (current + smoothed velocity * horizon). No forward
-                # shift is applied here; the "shift forward by a" this
-                # comment used to describe is stale and no longer reflects
-                # this code.
-                a = 0.6
-                b = 0.2
+                # Ellipse is shifted forward by `a` along the heading so
+                # its back edge starts at the current position, rather
+                # than being centered on the predicted point - prevents
+                # the ellipse from extending behind the person regardless
+                # of walking speed. a=1.10/b=0.40 is the thesis-confirmed
+                # value (supersedes all earlier figures).
+                a = 1.10
+                b = 0.40
                 ellipse_cx = current_x + a * math.cos(heading)
                 ellipse_cy = current_y + a * math.sin(heading)
 
@@ -377,17 +372,17 @@ class PredictedPersonCloudNode(Node):
                 #
                 # perp_x, perp_y = heading rotated -90 deg (clockwise) =
                 # the right-hand side relative to the person's direction
-                # of travel. lateral_bias is scaled to the current
-                # b=0.25 (roughly one full short-axis width) — large
-                # enough to clearly favor one side, but re-tune if the
-                # pass-behind gap feels too tight or the bias feels too
-                # weak to resolve hesitation. Must be updated together
-                # with the disk-fallback lateral_bias above whenever b
-                # changes, so the bias stays consistent regardless of
-                # whether the ellipse or the rotation-gated disk
-                # fallback is active on a given cycle.
+                # of travel. lateral_bias matched to the current b=0.40
+                # (roughly one full short-axis width) — large enough to
+                # clearly favor one side, but re-tune if the pass-behind
+                # gap feels too tight or the bias feels too weak to
+                # resolve hesitation. Must be updated together with the
+                # disk-fallback lateral_bias above whenever b changes, so
+                # the bias stays consistent regardless of whether the
+                # ellipse or the rotation-gated disk fallback is active
+                # on a given cycle.
                 # ==========================================================
-                lateral_bias = 0.20
+                lateral_bias = 0.40
                 perp_x = math.sin(heading)
                 perp_y = -math.cos(heading)
                 ellipse_cx += lateral_bias * perp_x
@@ -453,12 +448,12 @@ class PredictedPersonCloudNode(Node):
                 f"[{ids_str}] points={len(points)}{gated_str}"
             )
 
-
     def destroy_node(self):
         empty_cloud = self.create_cloud([], self.frame_id)
         self.pub.publish(empty_cloud)
         self.get_logger().info("Published empty cloud to clear costmap on shutdown")
         super().destroy_node()
+
     # ==============================================================
     # THESIS MODIFICATION
     #

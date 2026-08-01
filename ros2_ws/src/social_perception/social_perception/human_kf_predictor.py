@@ -82,6 +82,33 @@ class HumanTrackKF:
         #   too jittery.
         # ==========================================================
         self.smooth_alpha = 0.12
+
+        # ==========================================================
+        # THESIS MODIFICATION (asymmetric EMA decay)
+        #
+        # smooth_alpha=0.12 moves the filtered velocity only 12% toward
+        # each new reading, so it takes ~18 updates (~3s at 6Hz, longer
+        # under RTF sag) to decay 90%. That is the intended behaviour
+        # while WALKING - it suppresses the jitter that would otherwise
+        # be amplified by the prediction horizon - but it means velocity
+        # lingers long after motion stops.
+        #
+        # Observed: a bolted-down person read 0.14 m/s with the robot
+        # parked and the rotation gate INACTIVE, decaying only slowly
+        # toward zero. That is residue accumulated during an earlier
+        # motion phase, not live contamination. At 0.14 it is half of
+        # slow-walking speed, so it clears predicted_person_cloud_node's
+        # 0.05 stationary deadband and produces a 2.2m directional
+        # ellipse for someone standing still.
+        #
+        # Fix: use a much higher alpha when the raw velocity is SMALLER
+        # in magnitude than the current filtered estimate. Slowing down
+        # and stopping are tracked quickly; speeding up stays smoothed.
+        # This mirrors the existing direction-reversal reset below,
+        # which already treats "the filter is confidently wrong" as a
+        # case for abandoning smoothing rather than easing into it.
+        # ==========================================================
+        self.decay_alpha = 0.75
         self.vx_filt = None
         self.vy_filt = None
 
@@ -164,7 +191,16 @@ class HumanTrackKF:
                     self.vx_filt = vx_raw
                     self.vy_filt = vy_raw
                 else:
-                    a = self.smooth_alpha
+                    # Asymmetric alpha - see decay_alpha above. Decay
+                    # fast, rise slow.
+                    raw_speed = (vx_raw ** 2 + vy_raw ** 2) ** 0.5
+                    filt_speed = (self.vx_filt ** 2 + self.vy_filt ** 2) ** 0.5
+
+                    if raw_speed < filt_speed:
+                        a = self.decay_alpha
+                    else:
+                        a = self.smooth_alpha
+
                     self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
                     self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
 
@@ -348,6 +384,19 @@ class HumanKFPredictor(Node):
             base_x = float(parts[2])
             base_y = float(parts[3])
 
+            # THESIS ADDITION (group formation support): parse the bbox
+            # corners yolo_detector.py now appends as 4 trailing fields
+            # (x1,y1,x2,y2). Only present on a genuine fresh detection —
+            # this is exactly the "fresh" bbox group_formation_detector.py
+            # wants; coasted publishes below deliberately omit it.
+            bbox = None
+            if len(parts) >= 11:
+                try:
+                    bx1, by1, bx2, by2 = (int(float(p)) for p in parts[7:11])
+                    bbox = (bx1, by1, bx2, by2)
+                except ValueError:
+                    bbox = None
+
         except Exception as e:
             self.get_logger().warn(
                 f"Could not parse message: {msg.data} | error: {e}"
@@ -366,6 +415,8 @@ class HumanKFPredictor(Node):
 
         x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
 
+        bbox_str = f"{bbox[0]};{bbox[1]};{bbox[2]};{bbox[3]}" if bbox is not None else "none"
+
         out = String()
         out.data = (
             f"{track_id},"
@@ -374,7 +425,8 @@ class HumanKFPredictor(Node):
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
             f"{self.prediction_horizon:.2f},"
-            f"{1 if freeze_velocity else 0}"   # field [9] — rotation gate active
+            f"{1 if freeze_velocity else 0},"   # field [9] — rotation gate active
+            f"{bbox_str}"                      # field [10] — bbox or "none"
         )
 
         self.pub.publish(out)
@@ -413,7 +465,8 @@ class HumanKFPredictor(Node):
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
                 f"{self.prediction_horizon:.2f},"
-                f"0"
+                f"0,"                              # field [9] — rotation gate (always inactive on coast)
+                f"none"                             # field [10] — no fresh bbox while coasting
             )
             self.pub.publish(out)
 

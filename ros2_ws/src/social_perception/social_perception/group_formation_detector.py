@@ -48,10 +48,12 @@ INPUT
 Subscribes to /predicted_person_positions (String), CSV format from the
 current human_kf_predictor.py:
 
-    track_id,conf,x,y,vx,vy,pred_x,pred_y,horizon,bbox
+    track_id,conf,x,y,vx,vy,pred_x,pred_y,horizon,rotation_gate,bbox
 
-    bbox is "x1;y1;x2;y2" (semicolons) or the literal string "none" if
-    no fresh detection bbox is available this cycle (e.g. a coasted
+    Field [9] is the rotation-gate flag ("0"/"1"), unrelated to this
+    node but must not be misread as bbox. Field [10] is the bbox as
+    "x1;y1;x2;y2" (semicolons) or the literal string "none" if no
+    fresh detection bbox is available this cycle (e.g. a coasted
     prediction). Only tracks with a fresh, non-"none" bbox are eligible
     for the MobileCLIP confirmatory crop.
 
@@ -84,9 +86,12 @@ WHAT THIS FILE DOES NOT DO YET
 -----------------------------------------------------------------------
 1. It does not feed the costmap. /social_groups is published but has no
    consumer yet - that's social_group_cloud_node.py, the next piece.
-2. MobileCLIP loading/inference is stubbed behind a clear interface
-   (classify_facing) so this runs and is testable BEFORE MobileCLIP is
-   set up in Docker. Swap the stub body once the model is available.
+2. MobileCLIP loading/inference is fully implemented in classify_facing()
+   — real model load, real encode_image/encode_text calls, no stub
+   remaining. Facing-classification was validated via a controlled
+   distance sweep: confirmed reliable when the bbox top (y1) sits
+   clear of the frame edge, unreliable/flips wrong when y1=0 (head
+   clipped). See TOP_CLIP_MARGIN_PX below.
 3. Queue detection here uses a simple "fit a line, check residuals"
    approach. It will need real-world tuning (DBSCAN-style clustering
    first, if you ever have multiple simultaneous queues in frame at
@@ -119,6 +124,50 @@ CONV_MIN_DIST = 0.3          # m; below this, treat as same-person noise/overlap
 CONV_MAX_SPEED = 0.15        # m/s; "near-stationary" threshold
 CONV_MIN_DURATION = 1.5      # s; sustained closeness before flagging
 
+# --- Identity retention across occlusion ---
+# Split from the old single 1.0s staleness prune, which deleted the whole
+# TrackState - and with it close_since - after 1s of silence. With stable
+# IDs from identity_fusion_node, the ID survives a camera occlusion, but
+# it had nothing to come back TO: the accumulated conversation time was
+# already gone.
+#
+# FRESH_POSITION_TIMEOUT gates GEOMETRY: a track whose position is older
+# than this has untrustworthy coordinates and is excluded from pairing.
+# IDENTITY_RETENTION_TIMEOUT gates DELETION: the TrackState (and its
+# close_since history) is kept far longer, so a person who walks behind
+# an obstacle and returns resumes their established conversation instead
+# of restarting the CONV_MIN_DURATION clock from zero.
+FRESH_POSITION_TIMEOUT = 1.0      # s; position trusted for geometry
+IDENTITY_RETENTION_TIMEOUT = 300.0  # s; state kept for re-identification
+
+# Max gap between consecutive qualifying ticks that still counts as
+# continuous conversation time. Larger gaps are treated as an occlusion:
+# the pair RESUMES its accumulated duration rather than either resetting
+# it or (wrongly) counting the blind window as time spent conversing.
+CONV_MAX_CONTINUITY_GAP = 1.0     # s
+
+# --- Bbox retention ---
+# /predicted_person_positions interleaves measurement messages (real
+# bbox) with coasted ones (bbox "none") at roughly 0.1s spacing, because
+# human_kf_predictor's coast timer republishes without a detection. The
+# old code assigned t.bbox unconditionally, so every coasted message
+# wiped a perfectly good bbox from ~0.1s earlier - roughly halving the
+# frames on which classify_facing() had two usable bboxes and could run
+# the VLM at all.
+#
+# Fix: keep the last real bbox instead of nulling it. But a retained
+# bbox cannot be kept forever - if the person moves while coasting, the
+# stale pixel region no longer contains them, and cropping it would feed
+# the VLM the wrong image and get a confident wrong answer. That is
+# worse than skipping, since a missed confirmation retries next cycle
+# while a false one propagates.
+#
+# So the bbox carries its own timestamp and is refused past this age.
+# At the ~0.2 m/s walking speeds in the test worlds, 0.5s is well under
+# the time to move a body-width, while comfortably bridging the ~0.1s
+# measurement/coast alternation. Re-tune if people move faster.
+BBOX_MAX_AGE = 0.5                # s
+
 # --- Queue (3+, collinear) ---
 QUEUE_MIN_MEMBERS = 3
 QUEUE_MAX_SPACING = 1.5      # m; max gap between consecutive queue members
@@ -137,6 +186,15 @@ ENABLE_VLM_CONFIRMATION = True
 VLM_MIN_CONFIDENCE = 0.55    # below this similarity margin, fall back to "no group"
 RGB_TOPIC = "/oakd/rgb/preview/image_raw"
 
+# --- Framing gate for VLM confirmation ---
+# Empirically calibrated via a controlled distance sweep (see thesis
+# notes): bbox y1=0 (flush against the top of a 240px frame) correlates
+# with head-clipping and unreliable/flipped facing-classification.
+# y1>=5 was clean across every trial in the sweep; y1=0 was wrong or
+# borderline across every trial. Skip classify_facing() entirely rather
+# than risk a confidently-wrong result when framing is this tight.
+TOP_CLIP_MARGIN_PX = 5
+
 
 class TrackState:
     """Latest known state for one tracked person, plus a short history
@@ -147,11 +205,16 @@ class TrackState:
         self.y = None
         self.vx = 0.0
         self.vy = 0.0
-        self.bbox = None          # (x1, y1, x2, y2) or None if stale/unavailable
+        self.bbox = None          # (x1, y1, x2, y2); last REAL bbox seen
+        self.bbox_time = None     # when self.bbox was captured
         self.last_update = None
         # Timestamp at which this track first became a member of *some*
         # close-pair candidate; reset to None when it stops qualifying.
-        self.close_since = {}     # other_track_id -> first_close_timestamp
+        # other_track_id -> [accumulated_close_seconds, last_tick_time]
+        # Accumulated rather than a single first-seen timestamp, so an
+        # occlusion gap can be excluded from the total instead of being
+        # counted as conversation time.
+        self.close_since = {}
 
 
 class GroupFormationDetector(Node):
@@ -174,10 +237,60 @@ class GroupFormationDetector(Node):
         )
         self.clip_model.eval()
         self.clip_tokenizer = open_clip.get_tokenizer('MobileCLIP-S1')
+
+        # ==========================================================
+        # THESIS MODIFICATION (prompt-bias fix)
+        #
+        # Original 3-way prompt set ("facing each other talking" /
+        # "back to back" / "standing apart not interacting") was
+        # empirically shown to have a strong bias toward the "apart"
+        # prompt regardless of image content - confirmed via a
+        # horizontal-flip invariance test (near-identical scores on
+        # original vs. mirrored crop, ruling out orientation cues as
+        # the driver) and a real-photo control image (unambiguous
+        # facing-each-other photo still lost to "far apart" 0.627 to
+        # 0.235). Root cause: unbalanced prompt structure (compound
+        # claim vs. simple claims of different lengths) biases the
+        # softmax independent of the image.
+        #
+        # Fix: minimal-contrast binary pair (negation only, same
+        # length/structure) removes the structural bias. Verified on
+        # both the real photo (0.587) and the actual synthetic crop
+        # (0.564) - both now correctly favor "facing each other".
+        # ==========================================================
+        # ==========================================================
+        # KNOWN LIMITATION - single-crop facing classification does not
+        # work from a side-on viewpoint. Measured against staged ground
+        # truth (people rotated in place, crop verified by eye):
+        #
+        #   prompt pair                    back-to-back      facing
+        #   facing / not facing            0.664 "facing"    0.697 "facing"
+        #   from the front / from behind   0.924 "behind"    0.743 "behind"
+        #
+        # Both pairs return the SAME answer for both conditions. The
+        # first has no discrimination at all (0.03 gap); the second
+        # discriminates something (0.18 gap) but not the thing needed.
+        #
+        # The cause is geometric, not phrasing. Viewed side-on - which
+        # is where the robot stands relative to a conversing pair - a
+        # facing pair presents one front and one back, and so does a
+        # back-to-back pair. There is no single-crop appearance cue that
+        # separates them from this viewpoint.
+        #
+        # Reverted to the original pair pending a better approach.
+        # Candidates: per-person crops (classify each individual's
+        # front/back separately, then reason about the pair
+        # geometrically), or a non-visual facing estimate. NOTE that
+        # everything downstream currently trusts this classification -
+        # a wrong confirmation now becomes a phantom costmap zone via
+        # social_group_cloud_node, not just a wrong log line.
+        #
+        # Index [0] must remain the "conversation" answer -
+        # classify_facing returns best_idx == 0.
+        # ==========================================================
         self.clip_prompts = [
-            "two people facing each other talking",
-            "two people standing back to back",
-            "two people standing apart not interacting",
+            "two people facing each other",
+            "two people not facing each other",
         ]
         self.clip_text_tokens = self.clip_tokenizer(self.clip_prompts)
         with torch.no_grad():
@@ -197,6 +310,36 @@ class GroupFormationDetector(Node):
         # Detection runs on its own timer, decoupled from message arrival
         # rate, same pattern as predicted_person_cloud_node.py's publish
         # timer - keeps group detection at a fixed, predictable cadence.
+        # ==========================================================
+        # THESIS MODIFICATION (sticky confirmed pair)
+        #
+        # detect_groups() rebuilds every group from scratch each cycle,
+        # so a pair confirmed by the VLM 30s ago had to re-earn that
+        # confirmation every 0.3s. That inverted the desired behaviour
+        # at close range: once the robot approaches within ~3.0m the
+        # framing gate (TOP_CLIP_MARGIN_PX) starts skipping the VLM, so
+        # an established conversation silently dropped out of
+        # /social_groups exactly as the robot got close enough for the
+        # zone to matter for navigation.
+        #
+        # Fix: remember confirmation per pair. Once confirmed, the pair
+        # keeps its status on cheap geometry alone (distance + speed),
+        # and the VLM is not re-run.
+        #
+        # Keyed on frozenset({id_a, id_b}) of the STABLE ids supplied by
+        # identity_fusion_node, so the key survives a ByteTrack id switch
+        # across occlusion - the same mechanism that keeps close_since
+        # alive. A raw ByteTrack key would break on every re-detection.
+        #
+        # KNOWN LIMITATION (accepted, not solved): confirmation is
+        # cleared only when geometry breaks. Two people who stay close
+        # and stationary but turn back-to-back keep a stale
+        # "conversation" flag indefinitely, since nothing re-checks
+        # facing. Revisit if a scenario exercises it - the fix would be
+        # opportunistic re-validation whenever framing allows.
+        # ==========================================================
+        self.confirmed_pairs = {}   # frozenset({id_a, id_b}) -> confirm time
+
         self.detect_timer = self.create_timer(0.3, self.detect_groups)
 
         self.get_logger().info("Group formation detector started")
@@ -216,21 +359,11 @@ class GroupFormationDetector(Node):
         # frame when no ambiguous pair currently needs it.
         self.latest_frame = msg
 
-        # TEMP DEBUG: save the full raw frame every 30th callback so we
-        # can inspect the camera's actual vertical field of view.
-        if not hasattr(self, '_debug_frame_counter'):
-            self._debug_frame_counter = 0
-        self._debug_frame_counter += 1
-        if self._debug_frame_counter % 30 == 0:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            import cv2
-            cv2.imwrite("/root/thesis_social_navigation_ws/debug_full_frame.png", frame)
-
     def position_callback(self, msg):
         now = self.get_ros_time_seconds()
         parts = msg.data.split(",")
 
-        if len(parts) < 9:
+        if len(parts) < 10:
             self.get_logger().warn(f"Invalid /predicted_person_positions msg: {msg.data}")
             return
 
@@ -245,9 +378,9 @@ class GroupFormationDetector(Node):
             return
 
         bbox = None
-        if len(parts) >= 10 and parts[9] != "none":
+        if len(parts) >= 11 and parts[10] != "none":
             try:
-                bx1, by1, bx2, by2 = (int(v) for v in parts[9].split(";"))
+                bx1, by1, bx2, by2 = (int(v) for v in parts[10].split(";"))
                 bbox = (bx1, by1, bx2, by2)
             except ValueError:
                 bbox = None
@@ -257,7 +390,11 @@ class GroupFormationDetector(Node):
 
         t = self.tracks[track_id]
         t.x, t.y, t.vx, t.vy = x, y, vx, vy
-        t.bbox = bbox
+        # Only overwrite on a REAL bbox - a coasted message carries
+        # "none" and must not erase the last good one. See BBOX_MAX_AGE.
+        if bbox is not None:
+            t.bbox = bbox
+            t.bbox_time = now
         t.last_update = now
 
     # -------------------------------------------------------------
@@ -269,11 +406,25 @@ class GroupFormationDetector(Node):
         # Drop tracks that have gone silent - same staleness pattern used
         # in predicted_person_cloud_node.py / human_kf_predictor.py.
         stale = [tid for tid, t in self.tracks.items()
-                 if t.last_update is None or now - t.last_update > 1.0]
+                 if t.last_update is None
+                 or now - t.last_update > IDENTITY_RETENTION_TIMEOUT]
         for tid in stale:
             del self.tracks[tid]
 
-        active_ids = list(self.tracks.keys())
+        # Without this, confirmed_pairs would grow unbounded as tracks
+        # come and go. Deletion happens only after
+        # IDENTITY_RETENTION_TIMEOUT, so an occlusion does NOT reach here.
+        if stale:
+            gone = set(stale)
+            for key in [k for k in self.confirmed_pairs if k & gone]:
+                del self.confirmed_pairs[key]
+
+        # Only tracks with a FRESH position take part in geometry; the
+        # rest are retained (see IDENTITY_RETENTION_TIMEOUT) but their
+        # stale coordinates must not drive distance/speed decisions.
+        active_ids = [tid for tid, t in self.tracks.items()
+                      if t.last_update is not None
+                      and now - t.last_update <= FRESH_POSITION_TIMEOUT]
         groups = []
         used_in_conversation = set()
 
@@ -288,18 +439,64 @@ class GroupFormationDetector(Node):
 
             speed_a = math.hypot(ta.vx, ta.vy)
             speed_b = math.hypot(tb.vx, tb.vy)
-            if speed_a > CONV_MAX_SPEED or speed_b > CONV_MAX_SPEED:
+            # ==========================================================
+            # THESIS MODIFICATION (speed check exempts confirmed pairs)
+            #
+            # The speed check exists to reject two people who merely
+            # walk past each other. But the velocity it reads is derived
+            # from camera positions, which are contaminated by the
+            # ROBOT'S OWN motion - the same ego-motion problem
+            # human_kf_predictor's rotation gate addresses for the
+            # predicted ellipse.
+            #
+            # Measured: with both people bolted in place in
+            # conversation_test.sdf, driving the robot toward them
+            # produced apparent speeds of 0.160-0.180 m/s, just over
+            # CONV_MAX_SPEED=0.15. Tellingly the two members disagreed
+            # in the same cycle (a=0.000 while b=0.180), which real
+            # motion would not produce for two static models.
+            #
+            # The effect was that approaching a conversation revoked its
+            # confirmation - defeating the sticky flag at exactly the
+            # moment it exists to help, since the flag is meant to carry
+            # a confirmed pair through the close pass.
+            #
+            # Fix: once a pair is confirmed, hold it on DISTANCE alone.
+            # The speed check still applies to unconfirmed pairs, where
+            # it does its intended job of rejecting passers-by.
+            #
+            # KNOWN CONSEQUENCE (accepted): a confirmed pair that
+            # genuinely starts walking together keeps its zone, since
+            # distance stays small. Arguably correct - a moving group is
+            # still a group - but it does mean nothing revokes the zone
+            # short of them separating. The alternative considered was
+            # gating the speed check on the robot's own /odom velocity,
+            # which fixes the root cause rather than special-casing, and
+            # would also let unconfirmed pairs form while the robot
+            # moves. Worth revisiting if false positives appear.
+            # ==========================================================
+            already_confirmed = frozenset((id_a, id_b)) in self.confirmed_pairs
+
+            if not already_confirmed and (speed_a > CONV_MAX_SPEED
+                                          or speed_b > CONV_MAX_SPEED):
                 self._clear_close_since(ta, tb, id_a, id_b)
                 continue
 
             # Track how long this pair has been continuously close+slow.
-            first_seen = ta.close_since.get(id_b)
-            if first_seen is None:
-                ta.close_since[id_b] = now
-                tb.close_since[id_a] = now
-                first_seen = now
+            entry = ta.close_since.get(id_b)
+            if entry is None:
+                entry = [0.0, now]
+            else:
+                gap = now - entry[1]
+                if gap <= CONV_MAX_CONTINUITY_GAP:
+                    entry[0] += gap          # continuous: count it
+                # else: occlusion gap - resume, do not count the gap
+                entry[1] = now
 
-            duration = now - first_seen
+            ta.close_since[id_b] = entry
+            tb.close_since[id_a] = list(entry)
+
+            duration = entry[0]
             if duration < CONV_MIN_DURATION:
                 continue
 
@@ -307,7 +504,30 @@ class GroupFormationDetector(Node):
             # Facing direction is the genuine ambiguity - velocity heading
             # is meaningless at near-zero speed for both members.
             confirmed = True
-            if ENABLE_VLM_CONFIRMATION:
+            pair_key = frozenset((id_a, id_b))
+
+            if ENABLE_VLM_CONFIRMATION and pair_key in self.confirmed_pairs:
+                # Already confirmed - hold it on geometry alone. This is
+                # the whole point: no VLM call, so the framing gate
+                # cannot revoke an established conversation as the robot
+                # closes in. See self.confirmed_pairs in __init__.
+                confirmed = True
+
+            elif ENABLE_VLM_CONFIRMATION:
+                # ==========================================================
+                # THESIS MODIFICATION (framing gate)
+                #
+                # Empirically calibrated distance sweep showed
+                # classify_facing() is unreliable (and can confidently
+                # flip to the wrong answer) when either person's bbox
+                # is clipped at the top of frame (head cut off). Skip
+                # the VLM call entirely in that case rather than trust
+                # a result known to be unreliable at this framing.
+                # See TOP_CLIP_MARGIN_PX above for the calibration data.
+                # ==========================================================
+                if self._bbox_clipped_at_top(ta.bbox) or self._bbox_clipped_at_top(tb.bbox):
+                    continue
+
                 confirmed = self.classify_facing(ta, tb)
                 if confirmed is None:
                     # VLM unavailable/inconclusive this cycle - fall back
@@ -318,6 +538,12 @@ class GroupFormationDetector(Node):
                     continue
 
             if confirmed:
+                if ENABLE_VLM_CONFIRMATION and pair_key not in self.confirmed_pairs:
+                    self.confirmed_pairs[pair_key] = now
+                    self.get_logger().info(
+                        f"Pair ({id_a},{id_b}) VLM-confirmed - now sticky, "
+                        f"held on geometry until it breaks")
+
                 groups.append(self._build_conversation_zone(ta, tb, id_a, id_b))
                 used_in_conversation.add(id_a)
                 used_in_conversation.add(id_b)
@@ -333,6 +559,13 @@ class GroupFormationDetector(Node):
     def _clear_close_since(self, ta, tb, id_a, id_b):
         ta.close_since.pop(id_b, None)
         tb.close_since.pop(id_a, None)
+
+        # Geometry broke (moved apart or started walking) - this is the
+        # ONLY thing that revokes a sticky confirmation. Called from the
+        # distance and speed checks in detect_groups().
+        if self.confirmed_pairs.pop(frozenset((id_a, id_b)), None) is not None:
+            self.get_logger().info(
+                f"Pair ({id_a},{id_b}) confirmation cleared - geometry broke")
 
     # -------------------------------------------------------------
     # Conversation zone geometry
@@ -421,19 +654,41 @@ class GroupFormationDetector(Node):
                 half_length, half_width, member_ids)
 
     # -------------------------------------------------------------
-    # MobileCLIP confirmatory classification (STUB)
+    # Framing gate helper
+    #
+    # bbox is (x1, y1, x2, y2) in pixel coordinates, y1 = top edge.
+    # y1 <= TOP_CLIP_MARGIN_PX means the box is flush (or nearly
+    # flush) against the top of frame - empirically correlated with
+    # head-clipping and unreliable classify_facing() results.
+    # -------------------------------------------------------------
+    @staticmethod
+    def _bbox_clipped_at_top(bbox):
+        if bbox is None:
+            return True
+        _, y1, _, _ = bbox
+        return y1 <= TOP_CLIP_MARGIN_PX
+
+    # -------------------------------------------------------------
+    # MobileCLIP confirmatory classification
     #
     # Returns:
     #   True  -> confirmed facing each other (conversation)
     #   False -> confirmed NOT facing each other (e.g. back-to-back)
-    #   None  -> inconclusive / model unavailable this cycle
-    #
-    # Swap the body of this method once MobileCLIP is set up in Docker.
-    # Everything around it (when it's called, how its result is used)
-    # already matches the final integration point.
+    #   None  -> inconclusive (no bbox/frame yet, crop failed, or
+    #            best similarity score < VLM_MIN_CONFIDENCE)
     # -------------------------------------------------------------
     def classify_facing(self, ta, tb):
         if ta.bbox is None or tb.bbox is None or self.latest_frame is None:
+            return None
+
+        # Refuse a retained bbox that has gone stale: it may no longer
+        # contain the person, and cropping it would hand the VLM the
+        # wrong image. See BBOX_MAX_AGE.
+        now = self.get_ros_time_seconds()
+        if ta.bbox_time is None or tb.bbox_time is None:
+            return None
+        if (now - ta.bbox_time > BBOX_MAX_AGE
+                or now - tb.bbox_time > BBOX_MAX_AGE):
             return None
 
         frame = self.bridge.imgmsg_to_cv2(self.latest_frame, desired_encoding="bgr8")
@@ -443,13 +698,15 @@ class GroupFormationDetector(Node):
 
         crop_rgb = crop[:, :, ::-1]
         pil_image = Image.fromarray(crop_rgb)
-        pil_image.save("/root/thesis_social_navigation_ws/debug_clip_crop.png")  # TEMP DEBUG
         image_input = self.clip_preprocess(pil_image).unsqueeze(0)
 
         with torch.no_grad():
             image_features = self.clip_model.encode_image(image_input)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             similarities = (100.0 * image_features @ self.clip_text_features.T).softmax(dim=-1)
+
+        for i, prompt in enumerate(self.clip_prompts):
+            self.get_logger().info(f"  [{i}] '{prompt}' = {float(similarities[0, i]):.3f}")
 
         best_idx = int(similarities.argmax())
         best_score = float(similarities[0, best_idx])

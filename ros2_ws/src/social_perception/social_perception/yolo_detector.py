@@ -311,6 +311,7 @@ class YoloByteTrackPositionNode(Node):
             persist=True,
             tracker="bytetrack.yaml",
             classes=[0],
+
             conf=0.80,
             imgsz=320,
             verbose=False
@@ -454,7 +455,8 @@ class YoloByteTrackPositionNode(Node):
                 f"pixel=({u},{v}) "
                 f"depth={depth:.2f} m "
                 f"camera_xyz=({cam_x:.2f},{cam_y:.2f},{cam_z:.2f}) m "
-                f"map_xy=({map_x:.2f},{map_y:.2f}) m"
+                f"map_xy=({map_x:.2f},{map_y:.2f}) m "
+                f"bbox=({x1},{y1},{x2},{y2}) h={y2-y1}px"   # TEMP DIAGNOSTIC
             )
 
             if self.show_debug_image:
