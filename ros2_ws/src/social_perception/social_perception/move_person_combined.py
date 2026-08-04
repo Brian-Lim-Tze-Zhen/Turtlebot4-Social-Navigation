@@ -17,7 +17,7 @@ class MovePersonCombined(Node):
         self.model_name = "person_mover"
 
         # Movement endpoints in Gazebo world frame
-        self.point_a = (2.0, 4.0, 0.0)
+        self.point_a = (2.0, 1.0, 0.0)
         self.point_b = (2.0, 7.0, 0.0)
 
         self.speed = 0.2          # m/s

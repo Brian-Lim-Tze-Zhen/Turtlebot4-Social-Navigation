@@ -1,0 +1,184 @@
+[1mdiff --git a/ros2_ws/config/social_nav2.yaml b/ros2_ws/config/social_nav2.yaml[m
+[1mindex 9201c03..4d14abc 100644[m
+[1m--- a/ros2_ws/config/social_nav2.yaml[m
+[1m+++ b/ros2_ws/config/social_nav2.yaml[m
+[36m@@ -176,7 +176,7 @@[m [mlocal_costmap:[m
+ [m
+       inflation_layer:[m
+         plugin: "nav2_costmap_2d::InflationLayer"[m
+[31m-        cost_scaling_factor: 2.0[m
+[32m+[m[32m        cost_scaling_factor: 1.0[m
+         inflation_radius: 1.0[m
+ [m
+       voxel_layer:[m
+[36m@@ -340,8 +340,8 @@[m [mglobal_costmap:[m
+         # rather than hugging its edge. Local costmap keeps 1.0/1.0[m
+         # (softer gradient) — global sets the routing berth, local[m
+         # governs executed passing distance.[m
+[31m-        cost_scaling_factor: 4.0[m
+[31m-        inflation_radius: 0.7[m
+[32m+[m[32m        cost_scaling_factor: 3.0[m
+[32m+[m[32m        inflation_radius: 1.0[m
+       always_send_full_costmap: true[m
+ [m
+ planner_server:[m
+[1mdiff --git a/ros2_ws/simulation_models/worlds/conversation_test.sdf b/ros2_ws/simulation_models/worlds/conversation_test.sdf[m
+[1mindex 45c4129..a863b57 100644[m
+[1m--- a/ros2_ws/simulation_models/worlds/conversation_test.sdf[m
+[1m+++ b/ros2_ws/simulation_models/worlds/conversation_test.sdf[m
+[36m@@ -59,11 +59,11 @@[m
+     <!-- heading = +pi/2 (facing +Y) -> pose_yaw = heading + pi/2 = pi -->[m
+     <model name="person_1">[m
+       <static>true</static>[m
+[31m-      <pose>3 -0.5 0 0 0 3.14159</pose>[m
+[32m+[m[32m      <pose>3 -0.75 0 0 0 3.14159</pose>[m
+ [m
+       <link name="body">[m
+         <collision name="collision">[m
+[31m-          <pose>0 0 0.85 0 0 0</pose>[m
+[32m+[m[32m          <pose>0 0 -0.75 0 0 3.14</pose>[m
+           <geometry>[m
+             <cylinder>[m
+               <radius>0.25</radius>[m
+[36m@@ -86,11 +86,11 @@[m
+     <!-- heading = -pi/2 (facing -Y) -> pose_yaw = heading + pi/2 = 0 -->[m
+     <model name="person_2">[m
+       <static>true</static>[m
+[31m-      <pose>3 0.5 0 0 0 0</pose>[m
+[32m+[m[32m      <pose>3 0.75 0 0 0 0</pose>[m
+ [m
+       <link name="body">[m
+         <collision name="collision">[m
+[31m-          <pose>0 0 0.85 0 0 0</pose>[m
+[32m+[m[32m          <pose>0 0 0.75 0 0 0</pose>[m
+           <geometry>[m
+             <cylinder>[m
+               <radius>0.25</radius>[m
+[1mdiff --git a/ros2_ws/simulation_models/worlds/empty_human.sdf b/ros2_ws/simulation_models/worlds/empty_human.sdf[m
+[1mindex ee5e206..d8e8f90 100644[m
+[1m--- a/ros2_ws/simulation_models/worlds/empty_human.sdf[m
+[1m+++ b/ros2_ws/simulation_models/worlds/empty_human.sdf[m
+[36m@@ -58,7 +58,7 @@[m
+ [m
+     <model name="person_1">[m
+       <static>true</static>[m
+[31m-      <pose>3 0 0 0 0 -1.5</pose>[m
+[32m+[m[32m      <pose>6 0 0 0 0 -1.5</pose>[m
+ [m
+       <link name="body">[m
+ [m
+[1mdiff --git a/ros2_ws/src/social_perception/social_perception/human_kf_predictor.py b/ros2_ws/src/social_perception/social_perception/human_kf_predictor.py[m
+[1mindex d7e1994..9a71f40 100755[m
+[1m--- a/ros2_ws/src/social_perception/social_perception/human_kf_predictor.py[m
+[1m+++ b/ros2_ws/src/social_perception/social_perception/human_kf_predictor.py[m
+[36m@@ -108,7 +108,7 @@[m [mclass HumanTrackKF:[m
+         # which already treats "the filter is confidently wrong" as a[m
+         # case for abandoning smoothing rather than easing into it.[m
+         # ==========================================================[m
+[31m-        self.decay_alpha = 0.75[m
+[32m+[m[32m        self.decay_alpha = 0.12[m
+         self.vx_filt = None[m
+         self.vy_filt = None[m
+ [m
+[1mdiff --git a/ros2_ws/src/social_perception/social_perception/move_person_combined.py b/ros2_ws/src/social_perception/social_perception/move_person_combined.py[m
+[1mindex b48c63a..145aa71 100644[m
+[1m--- a/ros2_ws/src/social_perception/social_perception/move_person_combined.py[m
+[1m+++ b/ros2_ws/src/social_perception/social_perception/move_person_combined.py[m
+[36m@@ -17,7 +17,7 @@[m [mclass MovePersonCombined(Node):[m
+         self.model_name = "person_mover"[m
+ [m
+         # Movement endpoints in Gazebo world frame[m
+[31m-        self.point_a = (2.0, 4.0, 0.0)[m
+[32m+[m[32m        self.point_a = (2.0, 1.0, 0.0)[m
+         self.point_b = (2.0, 7.0, 0.0)[m
+ [m
+         self.speed = 0.2          # m/s[m
+[1mdiff --git a/ros2_ws/src/social_perception/social_perception/move_person_gazebo.py b/ros2_ws/src/social_perception/social_perception/move_person_gazebo.py[m
+[1mindex 8cb6788..44b55ee 100755[m
+[1m--- a/ros2_ws/src/social_perception/social_perception/move_person_gazebo.py[m
+[1m+++ b/ros2_ws/src/social_perception/social_perception/move_person_gazebo.py[m
+[36m@@ -17,11 +17,11 @@[m [mclass MovePersonGazebo(Node):[m
+         self.model_name = "person_1"[m
+ [m
+         # Movement endpoints in Gazebo world frame[m
+[31m-        self.point_a = (3.0, 0.0, 0.0)[m
+[31m-        self.point_b = (6.0, 0.0, 0.0)[m
+[32m+[m[32m        self.point_a = (8.0, 0.0, 0.0)[m
+[32m+[m[32m        self.point_b = (1.0, 0.0, 0.0)[m
+ [m
+[31m-        self.speed = 0.2          # m/s[m
+[31m-        self.update_dt = 0.5      # seconds[m
+[32m+[m[32m        self.speed = 1.2       # m/s[m
+[32m+[m[32m        self.update_dt = 0.2   # seconds[m
+ [m
+         # ==================================================[m
+         # THESIS ADDITION (endpoint pause)[m
+[1mdiff --git a/ros2_ws/src/social_perception/social_perception/predicted_person_cloud_node.py b/ros2_ws/src/social_perception/social_perception/predicted_person_cloud_node.py[m
+[1mindex 758065e..79594c1 100755[m
+[1m--- a/ros2_ws/src/social_perception/social_perception/predicted_person_cloud_node.py[m
+[1m+++ b/ros2_ws/src/social_perception/social_perception/predicted_person_cloud_node.py[m
+[36m@@ -56,7 +56,7 @@[m [mclass PredictedPersonCloudNode(Node):[m
+         # doesn't keep a phantom obstacle forever.[m
+         # ==========================================================[m
+         self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen, heading_sin, heading_cos)[m
+[31m-        self.track_timeout = 0.2        # seconds before a silent track is dropped[m
+[32m+[m[32m        self.track_timeout = 0.5        # seconds before a silent track is dropped[m
+         self.publish_rate_hz = 10.0   # cloud publish rate, decoupled from detection rate[m
+ [m
+         # ==========================================================[m
+[36m@@ -327,7 +327,7 @@[m [mclass PredictedPersonCloudNode(Node):[m
+                 disk_cy = predicted_y[m
+ [m
+                 if heading is not None:[m
+[31m-                    lateral_bias = 0.40  # matches ellipse b=0.40 below[m
+[32m+[m[32m                    lateral_bias = 0.20  # matches ellipse b=0.40 below[m
+                     disk_cx += lateral_bias * math.sin(heading)[m
+                     disk_cy += lateral_bias * -math.cos(heading)[m
+ [m
+[36m@@ -345,10 +345,11 @@[m [mclass PredictedPersonCloudNode(Node):[m
+                 # its back edge starts at the current position, rather[m
+                 # than being centered on the predicted point - prevents[m
+                 # the ellipse from extending behind the person regardless[m
+[31m-                # of walking speed. a=1.10/b=0.40 is the thesis-confirmed[m
+[31m-                # value (supersedes all earlier figures).[m
+[31m-                a = 1.10[m
+[31m-                b = 0.40[m
+[32m+[m[32m                # of walking speed. NOTE: thesis prose cites a=1.10/b=0.40; tested worse[m
+[32m+[m[32m                # for head-on - deployed value is 0.60/0.20.[m
+[32m+[m[32m                speed = t.get("speed", 0.0)[m
+[32m+[m[32m                a = min(1.6, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario[m
+[32m+[m[32m                b = 0.20[m
+                 ellipse_cx = current_x + a * math.cos(heading)[m
+                 ellipse_cy = current_y + a * math.sin(heading)[m
+ [m
+[36m@@ -372,7 +373,7 @@[m [mclass PredictedPersonCloudNode(Node):[m
+                 #[m
+                 # perp_x, perp_y = heading rotated -90 deg (clockwise) =[m
+                 # the right-hand side relative to the person's direction[m
+[31m-                # of travel. lateral_bias matched to the current b=0.40[m
+[32m+[m[32m                # of travel. lateral_bias matched to the current b=0.20[m
+                 # (roughly one full short-axis width) — large enough to[m
+                 # clearly favor one side, but re-tune if the pass-behind[m
+                 # gap feels too tight or the bias feels too weak to[m
+[36m@@ -382,7 +383,7 @@[m [mclass PredictedPersonCloudNode(Node):[m
+                 # ellipse or the rotation-gated disk fallback is active[m
+                 # on a given cycle.[m
+                 # ==========================================================[m
+[31m-                lateral_bias = 0.40[m
+[32m+[m[32m                lateral_bias = 0.20[m
+                 perp_x = math.sin(heading)[m
+                 perp_y = -math.cos(heading)[m
+                 ellipse_cx += lateral_bias * perp_x[m
+[1mdiff --git a/ros2_ws/src/social_perception/social_perception/yolo_detector.py b/ros2_ws/src/social_perception/social_perception/yolo_detector.py[m
+[1mindex df2fa3c..c1f8180 100755[m
+[1m--- a/ros2_ws/src/social_perception/social_perception/yolo_detector.py[m
+[1m+++ b/ros2_ws/src/social_perception/social_perception/yolo_detector.py[m
+[36m@@ -312,7 +312,7 @@[m [mclass YoloByteTrackPositionNode(Node):[m
+             tracker="bytetrack.yaml",[m
+             classes=[0],[m
+ [m
+[31m-            conf=0.80,[m
+[32m+[m[32m            conf=0.70,[m
+             imgsz=320,[m
+             verbose=False[m
+         )[m

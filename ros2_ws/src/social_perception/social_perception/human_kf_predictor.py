@@ -108,7 +108,7 @@ class HumanTrackKF:
         # which already treats "the filter is confidently wrong" as a
         # case for abandoning smoothing rather than easing into it.
         # ==========================================================
-        self.decay_alpha = 0.75
+        self.decay_alpha = 0.12
         self.vx_filt = None
         self.vy_filt = None
 

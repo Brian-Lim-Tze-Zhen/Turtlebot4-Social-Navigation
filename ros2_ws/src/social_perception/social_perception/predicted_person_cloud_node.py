@@ -56,7 +56,7 @@ class PredictedPersonCloudNode(Node):
         # doesn't keep a phantom obstacle forever.
         # ==========================================================
         self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen, heading_sin, heading_cos)
-        self.track_timeout = 0.2        # seconds before a silent track is dropped
+        self.track_timeout = 0.5        # seconds before a silent track is dropped
         self.publish_rate_hz = 10.0   # cloud publish rate, decoupled from detection rate
 
         # ==========================================================
@@ -327,7 +327,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.40  # matches ellipse b=0.40 below
+                    lateral_bias = 0.20  # matches ellipse b=0.40 below
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -345,10 +345,11 @@ class PredictedPersonCloudNode(Node):
                 # its back edge starts at the current position, rather
                 # than being centered on the predicted point - prevents
                 # the ellipse from extending behind the person regardless
-                # of walking speed. a=1.10/b=0.40 is the thesis-confirmed
-                # value (supersedes all earlier figures).
-                a = 1.10
-                b = 0.40
+                # of walking speed. NOTE: thesis prose cites a=1.10/b=0.40; tested worse
+                # for head-on - deployed value is 0.60/0.20.
+                speed = t.get("speed", 0.0)
+                a = min(1.6, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario
+                b = 0.20
                 ellipse_cx = current_x + a * math.cos(heading)
                 ellipse_cy = current_y + a * math.sin(heading)
 
@@ -372,7 +373,7 @@ class PredictedPersonCloudNode(Node):
                 #
                 # perp_x, perp_y = heading rotated -90 deg (clockwise) =
                 # the right-hand side relative to the person's direction
-                # of travel. lateral_bias matched to the current b=0.40
+                # of travel. lateral_bias matched to the current b=0.20
                 # (roughly one full short-axis width) — large enough to
                 # clearly favor one side, but re-tune if the pass-behind
                 # gap feels too tight or the bias feels too weak to
@@ -382,7 +383,7 @@ class PredictedPersonCloudNode(Node):
                 # ellipse or the rotation-gated disk fallback is active
                 # on a given cycle.
                 # ==========================================================
-                lateral_bias = 0.40
+                lateral_bias = 0.20
                 perp_x = math.sin(heading)
                 perp_y = -math.cos(heading)
                 ellipse_cx += lateral_bias * perp_x

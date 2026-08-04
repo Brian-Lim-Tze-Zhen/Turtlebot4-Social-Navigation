@@ -48,9 +48,9 @@ controller_server:
       # 120 steps -> ~1.56 m reach. If controller_server logs
       # "Control loop missed its desired rate", drop to 100 or
       # reduce batch_size to 1500.
-      time_steps: 120
+      time_steps: 180  # TEST(1.2m/s): rollout reach 1.86 -> 2.79 m
       model_dt: 0.05
-      batch_size: 2000
+      batch_size: 1500  # TEST(1.2m/s): offsets CPU cost of time_steps 180
       ax_max: 3.0
       ax_min: -3.0
       ay_max: 3.0
@@ -66,7 +66,7 @@ controller_server:
       # escape maneuvers at speeds the smoother silently clipped,
       # so executed trajectories were systematically ~2x slower than
       # planned - a direct cause of late/close avoidance.
-      vx_max: 0.26
+      vx_max: 0.31
       # BASELINE: vx_min -0.35 -> -0.26.
       # Reverse is retained in MPPI's action space, capped to match
       # velocity_smoother's min_velocity[0] (-0.26). Measured reversals
@@ -237,8 +237,8 @@ global_costmap:
       # this alone would not reduce plan lag. Both would need raising
       # together. At 0.2 m/s person speed the predicted lane is <=0.2 m
       # stale per cycle, small against the ellipse and inflation.
-      update_frequency: 1.0
-      publish_frequency: 1.0
+      update_frequency: 5.0
+      publish_frequency: 5.0
       global_frame: map
       robot_base_frame: base_link
       footprint: "[[ 0.189,  0.000],
@@ -340,8 +340,8 @@ global_costmap:
         # rather than hugging its edge. Local costmap keeps 1.0/1.0
         # (softer gradient) — global sets the routing berth, local
         # governs executed passing distance.
-        cost_scaling_factor: 3.0
-        inflation_radius: 1.0
+        cost_scaling_factor: 2.0  # TEST(1.2m/s): gentler decay, gradient reaches further
+        inflation_radius: 1.5  # TEST(1.2m/s): global plan pre-bends earlier
       always_send_full_costmap: true
 
 planner_server:

@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='ASCII'?>
 <sdf version='1.7'>
-  <world name='conversation_test'>
+  <world name='empty_world'>
     <physics type="ode">
       <max_step_size>0.003</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -13,7 +13,8 @@
       <render_engine>ogre2</render_engine>
     </plugin> -->
 
-    <light type="directional" name="sun">
+    <!-- TODO(rkreinin): Fix lighting so that spawning multiple robots does not crash the sim-->
+   <light type="directional" name="sun">
       <cast_shadows>0</cast_shadows>
       <pose>-5 -3 10 0 0 0</pose>
       <diffuse>1 1 1 1</diffuse>
@@ -55,63 +56,11 @@
       </link>
     </model>
 
-    <!-- person_1: at y=-0.5, facing +Y (toward person_2) -->
-    <!-- heading = +pi/2 (facing +Y) -> pose_yaw = heading + pi/2 = pi -->
-    <model name="person_1">
-      <static>true</static>
-      <pose>3 -0.75 0 0 0 3.14159</pose>
-
-      <link name="body">
-        <collision name="collision">
-          <pose>0 0 -0.75 0 0 3.14</pose>
-          <geometry>
-            <cylinder>
-              <radius>0.25</radius>
-              <length>1.5</length>
-            </cylinder>
-          </geometry>
-        </collision>
-
-        <visual name="visual">
-          <geometry>
-            <mesh>
-              <uri>model://person_standing/meshes/standing.dae</uri>
-            </mesh>
-          </geometry>
-        </visual>
-      </link>
-    </model>
-
-    <!-- person_2: at y=+0.5, facing -Y (toward person_1) -->
-    <!-- heading = -pi/2 (facing -Y) -> pose_yaw = heading + pi/2 = 0 -->
-    <model name="person_2">
-      <static>true</static>
-      <pose>3 0.75 0 0 0 0</pose>
-
-      <link name="body">
-        <collision name="collision">
-          <pose>0 0 0.75 0 0 0</pose>
-          <geometry>
-            <cylinder>
-              <radius>0.25</radius>
-              <length>1.5</length>
-            </cylinder>
-          </geometry>
-        </collision>
-
-        <visual name="visual">
-          <geometry>
-            <mesh>
-              <uri>model://person_standing/meshes/standing.dae</uri>
-            </mesh>
-          </geometry>
-        </visual>
-      </link>
-    </model>
-
     <model name="wall_1">
       <pose>3 5 1 0 0 0</pose>
+
       <link name="link">
+
         <collision name="collision">
           <geometry>
             <box>
@@ -119,6 +68,7 @@
             </box>
           </geometry>
         </collision>
+
         <visual name="visual">
           <geometry>
             <box>
@@ -126,12 +76,15 @@
             </box>
           </geometry>
         </visual>
+
       </link>
     </model>
 
     <model name="wall_2">
       <pose>3 -5 1 0 0 0</pose>
+
       <link name="link">
+
         <collision name="collision">
           <geometry>
             <box>
@@ -139,6 +92,7 @@
             </box>
           </geometry>
         </collision>
+
         <visual name="visual">
           <geometry>
             <box>
@@ -159,6 +113,7 @@
             </box>
           </geometry>
         </collision>
+
         <visual name="visual">
           <geometry>
             <box>
@@ -170,7 +125,9 @@
     </model>
 
     <model name="wall_4">
+
       <pose>10.5 0 1 0 0 1.5708</pose>
+
       <link name="link">
         <collision name="collision">
           <geometry>
@@ -179,6 +136,7 @@
             </box>
           </geometry>
         </collision>
+
         <visual name="visual">
           <geometry>
             <box>

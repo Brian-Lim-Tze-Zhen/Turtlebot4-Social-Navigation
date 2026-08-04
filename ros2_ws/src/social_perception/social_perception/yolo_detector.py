@@ -312,7 +312,7 @@ class YoloByteTrackPositionNode(Node):
             tracker="bytetrack.yaml",
             classes=[0],
 
-            conf=0.80,
+            conf=0.70,
             imgsz=320,
             verbose=False
         )

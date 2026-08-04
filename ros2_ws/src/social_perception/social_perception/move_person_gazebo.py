@@ -17,11 +17,11 @@ class MovePersonGazebo(Node):
         self.model_name = "person_1"
 
         # Movement endpoints in Gazebo world frame
-        self.point_a = (3.0, 0.0, 0.0)
-        self.point_b = (6.0, 0.0, 0.0)
+        self.point_a = (8.0, 0.0, 0.0)
+        self.point_b = (1.0, 0.0, 0.0)
 
-        self.speed = 0.2          # m/s
-        self.update_dt = 0.5      # seconds
+        self.speed = 1.2       # m/s
+        self.update_dt = 0.2   # seconds
 
         # ==================================================
         # THESIS ADDITION (endpoint pause)
