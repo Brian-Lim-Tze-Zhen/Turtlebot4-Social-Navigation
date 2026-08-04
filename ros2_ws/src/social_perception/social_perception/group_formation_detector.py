@@ -289,8 +289,8 @@ class GroupFormationDetector(Node):
         # classify_facing returns best_idx == 0.
         # ==========================================================
         self.clip_prompts = [
-            "two people facing each other",
-            "two people not facing each other",
+            "conversation",
+            "queue",
         ]
         self.clip_text_tokens = self.clip_tokenizer(self.clip_prompts)
         with torch.no_grad():
@@ -426,10 +426,47 @@ class GroupFormationDetector(Node):
                       if t.last_update is not None
                       and now - t.last_update <= FRESH_POSITION_TIMEOUT]
         groups = []
+
+        # ==================================================================
+        # THESIS FIX (queue/conversation precedence conflict)
+        #
+        # CONV_MAX_DIST (1.8m) > QUEUE_MAX_SPACING (1.5m): every adjacent
+        # queue pair also qualifies as a conversation candidate and gets
+        # sent to the VLM. Measured: a 3-person static queue viewed near
+        # head-on got confidently classified "facing each other" (0.627,
+        # not a marginal miss), consuming 2 of 3 members into a
+        # conversation group and starving _detect_queue() below
+        # QUEUE_MIN_MEMBERS.
+        #
+        # Fix: run the purely-geometric queue check FIRST, over all
+        # active tracks. Collinearity + regular spacing is a stronger,
+        # unambiguous signal than one VLM crop of two people pulled out
+        # of a longer line - if a valid queue exists, trust it and
+        # exclude its members from conversation pairing entirely.
+        #
+        # KNOWN LIMITATION (accepted, not solved): if a pair was already
+        # VLM-confirmed and sticky (self.confirmed_pairs) BEFORE the
+        # queue formed around them, that stale confirmation is not
+        # cleared here - _clear_close_since is the only thing that
+        # clears it, and it's never called for queue members. Revisit
+        # if a scenario exercises a confirmed pair later becoming part
+        # of a queue.
+        # ==================================================================
+        queue_group = self._detect_queue(active_ids)
+        queue_member_ids = set(queue_group[-1]) if queue_group is not None else set()
+        if queue_group is not None:
+            groups.append(queue_group)
+
         used_in_conversation = set()
 
-        # --- Conversation candidates: all pairs ---
+        # --- Conversation candidates: all pairs, excluding queue members ---
         for id_a, id_b in itertools.combinations(active_ids, 2):
+            if id_a in queue_member_ids or id_b in queue_member_ids:
+                continue
+
+            if id_a in used_in_conversation or id_b in used_in_conversation:
+                continue
+
             ta, tb = self.tracks[id_a], self.tracks[id_b]
 
             dist = math.hypot(ta.x - tb.x, ta.y - tb.y)
@@ -439,42 +476,6 @@ class GroupFormationDetector(Node):
 
             speed_a = math.hypot(ta.vx, ta.vy)
             speed_b = math.hypot(tb.vx, tb.vy)
-            # ==========================================================
-            # THESIS MODIFICATION (speed check exempts confirmed pairs)
-            #
-            # The speed check exists to reject two people who merely
-            # walk past each other. But the velocity it reads is derived
-            # from camera positions, which are contaminated by the
-            # ROBOT'S OWN motion - the same ego-motion problem
-            # human_kf_predictor's rotation gate addresses for the
-            # predicted ellipse.
-            #
-            # Measured: with both people bolted in place in
-            # conversation_test.sdf, driving the robot toward them
-            # produced apparent speeds of 0.160-0.180 m/s, just over
-            # CONV_MAX_SPEED=0.15. Tellingly the two members disagreed
-            # in the same cycle (a=0.000 while b=0.180), which real
-            # motion would not produce for two static models.
-            #
-            # The effect was that approaching a conversation revoked its
-            # confirmation - defeating the sticky flag at exactly the
-            # moment it exists to help, since the flag is meant to carry
-            # a confirmed pair through the close pass.
-            #
-            # Fix: once a pair is confirmed, hold it on DISTANCE alone.
-            # The speed check still applies to unconfirmed pairs, where
-            # it does its intended job of rejecting passers-by.
-            #
-            # KNOWN CONSEQUENCE (accepted): a confirmed pair that
-            # genuinely starts walking together keeps its zone, since
-            # distance stays small. Arguably correct - a moving group is
-            # still a group - but it does mean nothing revokes the zone
-            # short of them separating. The alternative considered was
-            # gating the speed check on the robot's own /odom velocity,
-            # which fixes the root cause rather than special-casing, and
-            # would also let unconfirmed pairs form while the robot
-            # moves. Worth revisiting if false positives appear.
-            # ==========================================================
             already_confirmed = frozenset((id_a, id_b)) in self.confirmed_pairs
 
             if not already_confirmed and (speed_a > CONV_MAX_SPEED
@@ -482,15 +483,13 @@ class GroupFormationDetector(Node):
                 self._clear_close_since(ta, tb, id_a, id_b)
                 continue
 
-            # Track how long this pair has been continuously close+slow.
             entry = ta.close_since.get(id_b)
             if entry is None:
                 entry = [0.0, now]
             else:
                 gap = now - entry[1]
                 if gap <= CONV_MAX_CONTINUITY_GAP:
-                    entry[0] += gap          # continuous: count it
-                # else: occlusion gap - resume, do not count the gap
+                    entry[0] += gap
                 entry[1] = now
 
             ta.close_since[id_b] = entry
@@ -500,41 +499,18 @@ class GroupFormationDetector(Node):
             if duration < CONV_MIN_DURATION:
                 continue
 
-            # Geometry alone got us this far (close, stationary, sustained).
-            # Facing direction is the genuine ambiguity - velocity heading
-            # is meaningless at near-zero speed for both members.
             confirmed = True
             pair_key = frozenset((id_a, id_b))
 
             if ENABLE_VLM_CONFIRMATION and pair_key in self.confirmed_pairs:
-                # Already confirmed - hold it on geometry alone. This is
-                # the whole point: no VLM call, so the framing gate
-                # cannot revoke an established conversation as the robot
-                # closes in. See self.confirmed_pairs in __init__.
                 confirmed = True
 
             elif ENABLE_VLM_CONFIRMATION:
-                # ==========================================================
-                # THESIS MODIFICATION (framing gate)
-                #
-                # Empirically calibrated distance sweep showed
-                # classify_facing() is unreliable (and can confidently
-                # flip to the wrong answer) when either person's bbox
-                # is clipped at the top of frame (head cut off). Skip
-                # the VLM call entirely in that case rather than trust
-                # a result known to be unreliable at this framing.
-                # See TOP_CLIP_MARGIN_PX above for the calibration data.
-                # ==========================================================
                 if self._bbox_clipped_at_top(ta.bbox) or self._bbox_clipped_at_top(tb.bbox):
                     continue
 
                 confirmed = self.classify_facing(ta, tb)
                 if confirmed is None:
-                    # VLM unavailable/inconclusive this cycle - fall back
-                    # to NOT flagging, rather than guessing. Conservative
-                    # choice: a missed conversation zone is recoverable
-                    # next cycle; a wrongly-claimed one wastes costmap
-                    # space for no reason.
                     continue
 
             if confirmed:
@@ -547,12 +523,6 @@ class GroupFormationDetector(Node):
                 groups.append(self._build_conversation_zone(ta, tb, id_a, id_b))
                 used_in_conversation.add(id_a)
                 used_in_conversation.add(id_b)
-
-        # --- Queue candidates: remaining tracks not already in a conversation ---
-        queue_candidates = [tid for tid in active_ids if tid not in used_in_conversation]
-        queue_group = self._detect_queue(queue_candidates)
-        if queue_group is not None:
-            groups.append(queue_group)
 
         self._publish_groups(groups)
 

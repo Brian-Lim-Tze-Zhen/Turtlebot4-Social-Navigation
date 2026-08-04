@@ -68,7 +68,35 @@ ZONE_BUFFER is defined in group_formation_detector.py (currently 0.4).
 This node subtracts that buffer back out to recover the raw separation,
 so SOURCE_ZONE_BUFFER below MUST match ZONE_BUFFER there. If they drift
 apart, every zone silently becomes the wrong length - there is no error,
-just wrong geometry. Change them together.
+just wrong geometry. Change them together. This coupling only applies
+to the CONVERSATION path (queue gap positions come from live lookups,
+not from decoding half_length - see QUEUE HANDLING below).
+
+-----------------------------------------------------------------------
+QUEUE HANDLING
+-----------------------------------------------------------------------
+A queue's /social_groups message carries only a centroid and total
+span - unlike a conversation's exactly-2-member case, individual
+member positions cannot be reconstructed from that alone for N>=3.
+
+So queue members' live positions are looked up separately from
+/predicted_person_positions (see QUEUE_POSITIONS_TOPIC), keyed by the
+same stable track_id used in /social_groups' member_ids field. This
+node then fills the gap between each CONSECUTIVE pair in that list
+(the order group_formation_detector's _detect_queue publishes them in,
+sorted by projection along the queue's axis), using the exact same
+o-space ellipse shape/sizing as a conversation gap - the queue's social
+space decomposes into a chain of pairwise gaps rather than one big
+region, consistent with only blocking gaps, never bodies.
+
+KNOWN LIMITATION (accepted, not solved): no lidar hold-open for queues
+yet, unlike the conversation path's anchor_a/anchor_b mechanism. If the
+camera loses ANY queue member, that gap (and only that gap - see
+make_queue_gap_points) simply stops updating and the whole group
+expires GROUP_TIMEOUT after its last message, rather than being held
+open on lidar the way a conversation is. Revisit if queue scenarios
+start exercising the camera's occlusion/FOV limits the way conversation
+testing already has.
 
 -----------------------------------------------------------------------
 INPUT / OUTPUT
@@ -76,6 +104,7 @@ INPUT / OUTPUT
 Subscribes:
   /social_groups (String)
       group_id,group_type,cx,cy,axis_x,axis_y,half_length,half_width,members
+  /predicted_person_positions (String) - queue member position lookup only
 
 Publishes:
   /social_group_cloud (PointCloud2, frame "map")
@@ -85,15 +114,6 @@ clears via raytracing, which fails for synthetic clouds that have no
 real sensor origin, leaving ghost obstacles behind forever.
 NonPersistentVoxelLayer rebuilds from scratch each cycle. This is the
 same lesson already recorded for predicted_person_cloud_node.py.
-
------------------------------------------------------------------------
-NOT HANDLED YET
------------------------------------------------------------------------
-group_type "queue" is parsed but deliberately skipped. A queue's social
-space is the line itself, not a gap between two members, so the o-space
-geometry here does not transfer. Queue zones need their own shape, and
-queue detection has not yet been exercised against a real 3+ person
-scene. Skipping is preferred over emitting a wrong-shaped zone silently.
 """
 
 import math
@@ -136,13 +156,27 @@ POINT_HEIGHT = 0.30    # m; matches predicted_person_cloud_node
 
 
 # =======================================================================
+# Queue gap-filling (camera-fresh only, no lidar hold-open yet)
+# =======================================================================
+# See QUEUE HANDLING in the module docstring for why this is a separate
+# topic subscription rather than a /social_groups schema change.
+QUEUE_POSITIONS_TOPIC = "/predicted_person_positions"
+
+# How stale a cached member position may be before it's refused for gap
+# geometry. Matches FRESH_POSITION_TIMEOUT in group_formation_detector.py
+# - same freshness standard, different file.
+QUEUE_POSITION_MAX_AGE = 1.0   # s
+
+
+# =======================================================================
 # Timing / safety
 # =======================================================================
 
 PUBLISH_RATE_HZ = 10.0
 
 # =======================================================================
-# Lidar-anchored persistence
+# Lidar-anchored persistence (CONVERSATION path only - see QUEUE
+# HANDLING above for why queues don't use this yet)
 # =======================================================================
 # PROBLEM: the zone vanished exactly when the robot got close, which is
 # when it matters most. group_formation_detector only emits a group
@@ -217,9 +251,11 @@ class SocialGroupCloudNode(Node):
         self.output_topic = self.get_parameter("output_topic").value
         self.frame_id = self.get_parameter("frame_id").value
 
-        # group_id -> dict(cx, cy, axis_x, axis_y, half_length, last_seen)
+        # group_id -> dict(...); shape differs by group type, see
+        # group_callback.
         self.active_groups = {}
         self.lidar_tracks = {}      # lidar_id -> (x, y, last_seen)
+        self.person_positions = {}  # track_id -> (x, y, last_seen); queue lookup only
         self.last_robot_xy = None
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -230,6 +266,9 @@ class SocialGroupCloudNode(Node):
 
         self.create_subscription(
             String, LIDAR_TOPIC, self.lidar_callback, 10)
+
+        self.create_subscription(
+            String, QUEUE_POSITIONS_TOPIC, self.position_callback, 10)
 
         self.pub = self.create_publisher(
             PointCloud2, self.output_topic, 10)
@@ -251,6 +290,9 @@ class SocialGroupCloudNode(Node):
         self.get_logger().info(
             f"Robot keep-out: {ROBOT_KEEPOUT_RADIUS:.2f} m "
             f"around '{ROBOT_FRAME}'")
+        self.get_logger().info(
+            f"Queue gap-fill: ON (positions from {QUEUE_POSITIONS_TOPIC}, "
+            f"no lidar hold-open yet)")
 
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -267,6 +309,26 @@ class SocialGroupCloudNode(Node):
         except ValueError:
             return
         self.lidar_tracks[lid] = (x, y, self.now())
+
+    # -----------------------------------------------------------------
+    # THESIS ADDITION (queue cloud support)
+    #
+    # Caches live positions from /predicted_person_positions, keyed by
+    # the same stable track_id /social_groups' queue member_ids uses.
+    # Only consumed by make_queue_gap_points() - conversation zones
+    # still get their positions decoded from centre+axis+span, unchanged.
+    # -----------------------------------------------------------------
+    def position_callback(self, msg):
+        parts = msg.data.split(",")
+        if len(parts) < 10:
+            return
+        try:
+            track_id = int(float(parts[0]))
+            x = float(parts[2])
+            y = float(parts[3])
+        except ValueError:
+            return
+        self.person_positions[track_id] = (x, y, self.now())
 
     def find_anchor(self, x, y, exclude=None):
         """Nearest lidar track to (x, y) within LIDAR_ANCHOR_GATE.
@@ -300,34 +362,91 @@ class SocialGroupCloudNode(Node):
             self.get_logger().warn(f"Parse failed: {msg.data}")
             return
 
-        if group_type != "conversation":
-            # See NOT HANDLED YET in the module docstring.
+        if group_type == "conversation":
+            # Recover the two members' positions from centre + axis +
+            # separation, so they can be matched to lidar anchors later.
+            separation = 2.0 * (half_length - SOURCE_ZONE_BUFFER)
+            norm = math.hypot(axis_x, axis_y)
+            if norm < 1e-6:
+                return
+            ax, ay = axis_x / norm, axis_y / norm
+            h = separation / 2.0
+
+            existing = self.active_groups.get(group_id, {})
+
+            self.active_groups[group_id] = {
+                "type": "conversation",
+                "member_a": (cx - h * ax, cy - h * ay),
+                "member_b": (cx + h * ax, cy + h * ay),
+                # Anchor ids are LEARNED while the camera is fresh (see
+                # publish_cloud) and reused directly once it goes blind, so a
+                # lost member is not re-matched by proximity to whatever
+                # happens to be nearby - which is how a member previously
+                # ended up 0.9m away, i.e. locked onto the OTHER person.
+                "anchor_a": existing.get("anchor_a"),
+                "anchor_b": existing.get("anchor_b"),
+                "last_seen": self.now(),
+                "camera_fresh": True,
+            }
+
+        elif group_type == "queue":
+            # See QUEUE HANDLING in the module docstring.
+            member_ids_str = parts[8].strip()
+            try:
+                member_ids = [int(v) for v in member_ids_str.split(";") if v]
+            except ValueError:
+                self.get_logger().warn(f"Bad member_ids in queue msg: {msg.data}")
+                return
+
+            if len(member_ids) < 2:
+                return
+
+            # ==================================================================
+            # THESIS FIX (queue group-identity churn under camera FOV limits)
+            #
+            # Previously keyed by the literal group_id string, which bakes the
+            # CURRENT roster into the key (queue_1_2_3_4 vs queue_1_2_3 are
+            # different dict entries). Measured: a 4-person queue outside the
+            # camera's simultaneous FOV capacity produces a roster that
+            # legitimately fluctuates between 3 and 4 visible members every
+            # cycle - not a rare glitch, the NORMAL state for a queue wider
+            # than the camera can frame at once. Every fluctuation was
+            # creating a brand-new group that then expired via GROUP_TIMEOUT
+            # almost immediately, even though the underlying queue was
+            # continuously, correctly detected the whole time.
+            #
+            # Fix: match an incoming queue message to an EXISTING active
+            # queue group by membership overlap rather than exact id match -
+            # same continuity principle the conversation path already uses
+            # (confirmed_pairs keyed by frozenset, anchors surviving
+            # occlusion), applied to group identity instead of pair
+            # confirmation. A shrinking or growing roster updates the same
+            # group in place instead of orphaning the old one.
+            #
+            # Single-queue assumption carried over unchanged from
+            # group_formation_detector.py's own docstring: this only
+            # disambiguates safely because at most one queue-like cluster is
+            # assumed at a time. Would need real work (matching by centroid
+            # proximity, not just any overlap) if that assumption changes.
+            # ==================================================================
+            new_members = set(member_ids)
+            matched_gid = None
+            for gid, g in self.active_groups.items():
+                if g.get("type") == "queue" and set(g["member_ids"]) & new_members:
+                    matched_gid = gid
+                    break
+
+            target_gid = matched_gid if matched_gid is not None else group_id
+
+            self.active_groups[target_gid] = {
+                "type": "queue",
+                "member_ids": member_ids,
+                "last_seen": self.now(),
+            }
+
+        else:
+            # Unknown group_type - ignore rather than guess a shape for it.
             return
-
-        # Recover the two members' positions from centre + axis +
-        # separation, so they can be matched to lidar anchors later.
-        separation = 2.0 * (half_length - SOURCE_ZONE_BUFFER)
-        norm = math.hypot(axis_x, axis_y)
-        if norm < 1e-6:
-            return
-        ax, ay = axis_x / norm, axis_y / norm
-        h = separation / 2.0
-
-        existing = self.active_groups.get(group_id, {})
-
-        self.active_groups[group_id] = {
-            "member_a": (cx - h * ax, cy - h * ay),
-            "member_b": (cx + h * ax, cy + h * ay),
-            # Anchor ids are LEARNED while the camera is fresh (see
-            # publish_cloud) and reused directly once it goes blind, so a
-            # lost member is not re-matched by proximity to whatever
-            # happens to be nearby - which is how a member previously
-            # ended up 0.9m away, i.e. locked onto the OTHER person.
-            "anchor_a": existing.get("anchor_a"),
-            "anchor_b": existing.get("anchor_b"),
-            "last_seen": self.now(),
-            "camera_fresh": True,
-        }
 
     # -----------------------------------------------------------------
     def o_space_half_length(self, source_half_length):
@@ -357,11 +476,56 @@ class SocialGroupCloudNode(Node):
             u = iu * POINT_SPACING
             for iv in range(-steps_v, steps_v + 1):
                 v = iv * POINT_SPACING
+
                 if (u / a) ** 2 + (v / b) ** 2 <= 1.0:
                     # rotate local (u, v) onto the group's axis
                     x = cx + u * ax - v * ay
                     y = cy + u * ay + v * ax
                     points.append((x, y, POINT_HEIGHT))
+
+        return points
+
+    # -----------------------------------------------------------------
+    # THESIS ADDITION (queue cloud support)
+    #
+    # Fills the gap between each CONSECUTIVE pair in member_ids (the
+    # order _detect_queue publishes them, sorted along the queue's
+    # axis) using the same o-space shape as a conversation.
+    #
+    # Deliberately looks up each pair fresh from the ORIGINAL member_ids
+    # list, not from a pre-filtered "positions we have" list - if one
+    # member's position is missing/stale, only the ONE gap touching
+    # that member is skipped. Pairing across a missing middle member
+    # instead would silently bridge two non-adjacent people and produce
+    # an oversized, wrongly-shaped fill - worse than just omitting that
+    # gap.
+    # -----------------------------------------------------------------
+    def make_queue_gap_points(self, member_ids):
+        points = []
+        now = self.now()
+
+        for tid_a, tid_b in zip(member_ids, member_ids[1:]):
+            cached_a = self.person_positions.get(tid_a)
+            cached_b = self.person_positions.get(tid_b)
+            if cached_a is None or cached_b is None:
+                continue
+
+            xa, ya, ta = cached_a
+            xb, yb, tb = cached_b
+            if (now - ta > QUEUE_POSITION_MAX_AGE
+                    or now - tb > QUEUE_POSITION_MAX_AGE):
+                continue
+
+            dx, dy = xb - xa, yb - ya
+            separation = math.hypot(dx, dy)
+
+            a = separation / 2.0 - BODY_CLEARANCE
+            if a < MIN_O_SPACE_HALF_LENGTH:
+                continue
+
+            gx = (xa + xb) / 2.0
+            gy = (ya + yb) / 2.0
+            points.extend(self.make_o_space_points(gx, gy, dx, dy, a))
 
         return points
 
@@ -374,11 +538,31 @@ class SocialGroupCloudNode(Node):
                     if now - v[2] > LIDAR_TRACK_TIMEOUT]:
             del self.lidar_tracks[lid]
 
+        # Expire cached person positions (queue gap lookups).
+        for tid in [t for t, v in self.person_positions.items()
+                    if now - v[2] > QUEUE_POSITION_MAX_AGE]:
+            del self.person_positions[tid]
+
         points = []
         published = []
         drop = []
 
         for gid, g in self.active_groups.items():
+            if g["type"] == "queue":
+                # No lidar hold-open for queues yet - see QUEUE HANDLING
+                # in the module docstring. Expires on the same rule the
+                # conversation path uses for "camera fresh".
+                if now - g["last_seen"] > GROUP_TIMEOUT:
+                    drop.append((gid, "queue: no update within GROUP_TIMEOUT"))
+                    continue
+
+                gap_points = self.make_queue_gap_points(g["member_ids"])
+                points.extend(gap_points)
+                if gap_points:
+                    published.append(("queue", gid, len(g["member_ids"])))
+                continue
+
+            # --- conversation path, unchanged ---
             camera_age = now - g["last_seen"]
             camera_fresh = camera_age <= GROUP_TIMEOUT
 
@@ -460,7 +644,7 @@ class SocialGroupCloudNode(Node):
                 continue
 
             points.extend(self.make_o_space_points(cx, cy, dx, dy, a))
-            published.append((gid, a, camera_fresh))
+            published.append(("conversation", gid, a, camera_fresh))
 
         for gid, reason in drop:
             del self.active_groups[gid]
@@ -491,9 +675,16 @@ class SocialGroupCloudNode(Node):
         self.pub.publish(self.create_cloud(points))
 
         if published:
-            desc = ", ".join(
-                f"{g}(len={2*a:.2f}m{'' if fresh else ',LIDAR-HELD'})"
-                for g, a, fresh in published)
+            parts_desc = []
+            for entry in published:
+                if entry[0] == "queue":
+                    _, gid, n_members = entry
+                    parts_desc.append(f"{gid}(queue,{n_members} members)")
+                else:
+                    _, gid, a, fresh = entry
+                    parts_desc.append(
+                        f"{gid}(len={2*a:.2f}m{'' if fresh else ',LIDAR-HELD'})")
+            desc = ", ".join(parts_desc)
             self.get_logger().info(
                 f"Published {len(published)} zone(s): {desc} "
                 f"points={len(points)}")
