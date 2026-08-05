@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-
+import time
 import math
 import cv2
 import numpy as np
 
-import torch
-torch.set_num_threads(2)  # or 1 — start low and measure
+# import torch
+# torch.set_num_threads(2)  # or 1 — start low and measure
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +37,7 @@ class YoloByteTrackPositionNode(Node):
         self.model = YOLO("/root/thesis_social_navigation_ws/models/yolov8s.pt")
 
         self.frame_count = 0
-        self.process_every_n_frames = 2
+        self.process_every_n_frames = 1
         self.show_debug_image = True
 
         self.latest_depth = None
@@ -48,12 +48,13 @@ class YoloByteTrackPositionNode(Node):
 
         # Depth filtering
         self.min_depth = 0.2
-        self.max_depth = 7.0
+        # was: self.max_depth = 7.0
+        self.max_depth = 9.0
         self.min_depth_pixels = 50
         self.max_depth_std = 0.30  # meters; rejects bimodal body+background patches
         # Jump rejection in map frame
         self.last_positions = {}   # track_id -> (x, y, timestamp)
-        self.max_jump = 0.8
+        self.max_speed = 2.5  # m/s; margin above human_kf_predictor's 2.0 m/s hard cap
         self.jump_timeout = 2.0    # seconds; stale entry skips jump check
 
         self.pub = self.create_publisher(String, "/person_positions_map", 10)
@@ -242,7 +243,7 @@ class YoloByteTrackPositionNode(Node):
             point_target = self.tf_buffer.transform(
                 point_cam,
                 self.target_frame,
-                timeout=rclpy.duration.Duration(seconds=0.2)
+                timeout=rclpy.duration.Duration(seconds=0.05)
             )
 
             return (
@@ -262,7 +263,7 @@ class YoloByteTrackPositionNode(Node):
                     point_target = self.tf_buffer.transform(
                         point_cam,
                         self.target_frame,
-                        timeout=rclpy.duration.Duration(seconds=0.2)
+                        timeout=rclpy.duration.Duration(seconds=0.05)
                     )
                     return (
                         point_target.point.x,
@@ -277,6 +278,7 @@ class YoloByteTrackPositionNode(Node):
             return None
 
     def rgb_callback(self, msg):
+        t_cb_start = time.monotonic()
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as e:
@@ -306,16 +308,19 @@ class YoloByteTrackPositionNode(Node):
 
             return
 
+    
+        t0 = time.monotonic()
         results = self.model.track(
-            source=frame,
-            persist=True,
-            tracker="bytetrack.yaml",
-            classes=[0],
-
-            conf=0.70,
-            imgsz=320,
-            verbose=False
-        )
+                source=frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                classes=[0],
+                conf=0.70,
+                imgsz=320,
+                verbose=False
+            )
+        inference_ms = (time.monotonic() - t0) * 1000.0
+        self.get_logger().info(f"YOLO inference: {inference_ms:.1f} ms")
 
         if results is None or len(results) == 0:
             if self.show_debug_image:
@@ -402,13 +407,17 @@ class YoloByteTrackPositionNode(Node):
             now_sec = self.get_clock().now().nanoseconds * 1e-9
             if track_id in self.last_positions:
                 last_x, last_y, last_t = self.last_positions[track_id]
-                if now_sec - last_t <= self.jump_timeout:
+                # was:
+                #     if now_sec - last_t <= self.jump_timeout:
+                #         jump = math.hypot(map_x - last_x, map_y - last_y)
+                #         if jump > self.max_jump:
+                if 0.0 < (now_sec - last_t) <= self.jump_timeout:
                     jump = math.hypot(map_x - last_x, map_y - last_y)
-
-                    if jump > self.max_jump:
+                    implied_speed = jump / (now_sec - last_t)
+                    if implied_speed > self.max_speed:
                         self.get_logger().warn(
                             f"Reject jump id:{track_id}, "
-                            f"jump={jump:.2f} m, "
+                            f"jump={jump:.2f} m, implied_speed={implied_speed:.2f} m/s, "
                             f"new=({map_x:.2f},{map_y:.2f}), "
                             f"last=({last_x:.2f},{last_y:.2f})"
                         )
@@ -486,6 +495,9 @@ class YoloByteTrackPositionNode(Node):
         if self.show_debug_image:
             cv2.imshow("YOLO ByteTrack Position", display_frame)
             cv2.waitKey(1)
+
+        cb_ms = (time.monotonic() - t_cb_start) * 1000.0
+        self.get_logger().info(f"Full callback: {cb_ms:.1f} ms")
 
 
 def main(args=None):

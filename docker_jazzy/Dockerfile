@@ -131,7 +131,16 @@ RUN apt update && apt install -y \
 # Fix simulated RPLidar constant-range issue (ogre -> ogre2)
 RUN sed -i 's/<render_engine>ogre<\/render_engine>/<render_engine>ogre2<\/render_engine>/g' \
     /opt/ros/jazzy/share/irobot_create_description/urdf/create3.urdf.xacro
-
+# FIX: cap Create3 ray-sensor render rates (62 Hz -> 10 Hz).
+# 4 cliff + 7 IR-intensity sensors are GPU render passes; at the
+# Create3 bus default of 62 Hz they starved the renderer, leaving
+# /scan at ~24 Hz (nominal 62) and the OAK-D at ~12 Hz (nominal 30).
+# 10 Hz preserves motion_control's reflex latency (0.1 s) while
+# recovering most of the capacity. Measured: RTF 0.5 -> ~0.85.
+RUN sed -i '/name="update_rate"/s/value="62"/value="10"/' \
+      /opt/ros/jazzy/share/irobot_create_description/urdf/sensors/cliff_sensor.urdf.xacro && \
+    sed -i 's/update_rate:=62.0 fov:=/update_rate:=10.0 fov:=/' \
+      /opt/ros/jazzy/share/irobot_create_description/urdf/sensors/ir_intensity.urdf.xacro
 
 # -----------------------------------------------------
 # 8. ROS dependency tools
@@ -184,10 +193,10 @@ RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
 #     re-tune against your actual hardware/workload if YOLO
 #     inference itself feels too slow with this cap in place.
 # -----------------------------------------------------
-RUN echo 'export OMP_NUM_THREADS=2' >> /root/.bashrc && \
-    echo 'export MKL_NUM_THREADS=2' >> /root/.bashrc && \
-    echo 'export OPENBLAS_NUM_THREADS=2' >> /root/.bashrc && \
-    echo 'export NUMEXPR_NUM_THREADS=2' >> /root/.bashrc
+# RUN echo 'export OMP_NUM_THREADS=2' >> /root/.bashrc && \
+#     echo 'export MKL_NUM_THREADS=2' >> /root/.bashrc && \
+#     echo 'export OPENBLAS_NUM_THREADS=2' >> /root/.bashrc && \
+#     echo 'export NUMEXPR_NUM_THREADS=2' >> /root/.bashrc
 
 
 # -----------------------------------------------------

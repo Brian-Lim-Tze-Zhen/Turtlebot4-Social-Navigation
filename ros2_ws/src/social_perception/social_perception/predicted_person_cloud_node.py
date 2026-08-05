@@ -327,7 +327,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.20  # matches ellipse b=0.40 below
+                    lateral_bias = 0.20  # matches ellipse b=0.20 below
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 

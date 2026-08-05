@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
+import math
 import numpy as np
-
 import rclpy
+import time as _wall 
 from rclpy.node import Node
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
@@ -45,11 +46,11 @@ class HumanTrackKF:
         # smoothing below.
         # ==========================================================
         q_pos = 0.05
-        q_vel = 0.005
+        q_vel = 0.05
         self.Q = np.diag([q_pos, q_pos, q_vel, q_vel])
 
         # Measurement noise
-        self.R = np.eye(2) * 0.80
+        self.R = np.eye(2) * 0.10
 
         # Measurement matrix: only position x, y is measured
         self.H = np.array([
@@ -81,7 +82,12 @@ class HumanTrackKF:
         #   data; revisit if live behavior feels too laggy or still
         #   too jittery.
         # ==========================================================
-        self.smooth_alpha = 0.12
+        # was: self.smooth_alpha = 0.12
+        self.tau_rise = 0.5   # s; was 1.3. At 1.2 m/s a walk leg is only ~4 s,
+                               # so 1.3 s spent most of the encounter still
+                               # converging (vel_filt -1.06 vs true -1.21).
+                               # Trade-off: less noise on the horizon-multiplied
+                               # value. Fallback 0.8 if pred jitters.
 
         # ==========================================================
         # THESIS MODIFICATION (asymmetric EMA decay)
@@ -108,7 +114,13 @@ class HumanTrackKF:
         # which already treats "the filter is confidently wrong" as a
         # case for abandoning smoothing rather than easing into it.
         # ==========================================================
-        self.decay_alpha = 0.12
+        # was: self.decay_alpha = 0.12
+        self.tau_decay = 1.3  # s; PLACEHOLDER — currently symmetric with tau_rise.
+                            # Original comments describe intended fast-decay/
+                            # slow-rise asymmetry, but decay_alpha was numerically
+                            # identical to smooth_alpha (0.12) in the prior code —
+                            # no asymmetry was actually active. Revisit this value
+                            # once you decide on an intended decay speed.
         self.vx_filt = None
         self.vy_filt = None
 
@@ -196,10 +208,18 @@ class HumanTrackKF:
                     raw_speed = (vx_raw ** 2 + vy_raw ** 2) ** 0.5
                     filt_speed = (self.vx_filt ** 2 + self.vy_filt ** 2) ** 0.5
 
+                # was:
+                    #     if raw_speed < filt_speed:
+                    #         a = self.decay_alpha
+                    #     else:
+                    #         a = self.smooth_alpha
+                    #     self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
+                    #     self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
+
                     if raw_speed < filt_speed:
-                        a = self.decay_alpha
+                        a = 1.0 - math.exp(-dt / self.tau_decay)
                     else:
-                        a = self.smooth_alpha
+                        a = 1.0 - math.exp(-dt / self.tau_rise)
 
                     self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
                     self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
@@ -242,7 +262,7 @@ class HumanTrackKF:
         pred_x = x + vx_pred * horizon
         pred_y = y + vy_pred * horizon
 
-        return x, y, vx_pred, vy_pred, pred_x, pred_y
+        return x, y, vx_pred, vy_pred, pred_x, pred_y, vx, vy
 
 
 class HumanKFPredictor(Node):
@@ -254,7 +274,7 @@ class HumanKFPredictor(Node):
         # =====================================
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
-        self.declare_parameter("prediction_horizon", 3.0)
+        self.declare_parameter("prediction_horizon", 1.0)
         self.declare_parameter("coast_timeout", 1.5)
         self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
 
@@ -351,6 +371,7 @@ class HumanKFPredictor(Node):
 
     def person_callback(self, msg):
         now = self.get_ros_time_seconds()
+        self.get_logger().info(f"CLOCKCHK ros_t={now:.3f} wall_t={_wall.time():.3f}")
 
         # ==========================================================
         # THESIS MODIFICATION (ego-motion rotation gate)
@@ -413,7 +434,7 @@ class HumanKFPredictor(Node):
         track.last_conf = conf
         track.update(base_x, base_y, now, freeze_velocity=freeze_velocity)
 
-        x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
+        x, y, vx, vy, pred_x, pred_y, vx_raw, vy_raw = track.predict_future(self.prediction_horizon)
 
         bbox_str = f"{bbox[0]};{bbox[1]};{bbox[2]};{bbox[3]}" if bbox is not None else "none"
 
@@ -434,7 +455,7 @@ class HumanKFPredictor(Node):
         self.get_logger().info(
             f"id:{track_id} "
             f"pos=({x:.2f},{y:.2f}) "
-            f"vel=({vx:.2f},{vy:.2f}) "
+            f"vel_filt=({vx:.2f},{vy:.2f}) vel_raw=({vx_raw:.2f},{vy_raw:.2f}) "
             f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f})"
             + (" [ROT GATED]" if freeze_velocity else "")
         )
@@ -456,7 +477,7 @@ class HumanKFPredictor(Node):
             if age < 0.1:
                 continue
 
-            x, y, vx, vy, pred_x, pred_y = track.predict_future(self.prediction_horizon)
+            x, y, vx, vy, pred_x, pred_y, vx_raw, vy_raw = track.predict_future(self.prediction_horizon)
             out = String()
             out.data = (
                 f"{track_id},"
