@@ -9,6 +9,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
@@ -37,8 +38,8 @@ class YoloByteTrackPositionNode(Node):
         self.model = YOLO("/root/thesis_social_navigation_ws/models/yolov8s.pt")
 
         self.frame_count = 0
-        self.process_every_n_frames = 1
-        self.show_debug_image = True
+        self.process_every_n_frames = 2
+        self.show_debug_image = False
 
         self.latest_depth = None
         self.fx = None
@@ -59,8 +60,24 @@ class YoloByteTrackPositionNode(Node):
 
         self.pub = self.create_publisher(String, "/person_positions_map", 10)
 
-        self.create_subscription(Image, self.rgb_topic, self.rgb_callback, 10)
-        self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
+        # ==========================================================
+        # THESIS FIX (frame staleness)
+        #
+        # Default depth-10 queue let up to 10 frames back up, so the
+        # callback always processed the OLDEST queued frame. Measured
+        # 325 ms mean frame age at callback entry -- roughly 8 frames
+        # at the ~25 Hz camera rate. depth=1 + BEST_EFFORT drops late
+        # frames instead of queueing them, so the newest frame is
+        # always the one processed.
+        # ==========================================================
+        sensor_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+
+        self.create_subscription(Image, self.rgb_topic, self.rgb_callback, sensor_qos)
+        self.create_subscription(Image, self.depth_topic, self.depth_callback, sensor_qos)
         self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, 10)
 
         self.tf_buffer = tf2_ros.Buffer(
@@ -279,6 +296,8 @@ class YoloByteTrackPositionNode(Node):
 
     def rgb_callback(self, msg):
         t_cb_start = time.monotonic()
+        msg_age = self.get_clock().now().nanoseconds * 1e-9 - (
+            msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as e:
@@ -320,7 +339,6 @@ class YoloByteTrackPositionNode(Node):
                 verbose=False
             )
         inference_ms = (time.monotonic() - t0) * 1000.0
-        self.get_logger().info(f"YOLO inference: {inference_ms:.1f} ms")
 
         if results is None or len(results) == 0:
             if self.show_debug_image:
@@ -404,7 +422,12 @@ class YoloByteTrackPositionNode(Node):
             # Reject impossible map-frame jumps for the same ByteTrack ID.
             # Skip the check when the stored entry is stale — the person may
             # have genuinely moved or reappeared from occlusion.
-            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            # Stamp from the image capture time, not the processing clock.
+            # Processing time drifts relative to capture time once frames are
+            # dropped (depth=1 BEST_EFFORT), producing dt values far smaller
+            # than the true interval between the two observed positions --
+            # measured implied_speed up to 11 m/s for a genuine 0.24 m step.
+            now_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             if track_id in self.last_positions:
                 last_x, last_y, last_t = self.last_positions[track_id]
                 # was:
@@ -497,7 +520,6 @@ class YoloByteTrackPositionNode(Node):
             cv2.waitKey(1)
 
         cb_ms = (time.monotonic() - t_cb_start) * 1000.0
-        self.get_logger().info(f"Full callback: {cb_ms:.1f} ms")
 
 
 def main(args=None):

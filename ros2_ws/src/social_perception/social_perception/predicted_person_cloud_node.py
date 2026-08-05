@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import math
+import time
 import struct
 
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
+from nav2_msgs.srv import ClearEntireCostmap
 
 import tf2_ros
 
@@ -35,7 +37,30 @@ class PredictedPersonCloudNode(Node):
             "/predicted_person_cloud",
             10
         )
-
+        # ==========================================================
+        # THESIS MODIFICATION (stale mark clearing)
+        #
+        # NonPersistentVoxelLayer resets its own grid each cycle, but
+        # updateCosts() only writes into the master costmap within the
+        # bounds it reports. With no observations there are no bounds,
+        # so stale master cells are never overwritten -- confirmed by
+        # publishing empty clouds (width=0) while marks persisted with
+        # the robot parked. clearing:true does not help: raytrace
+        # clearing needs points to trace rays TO, and an empty cloud
+        # has none.
+        #
+        # Fix: clear both costmaps once when the last track expires.
+        # Fires only on the non-empty -> empty transition. This resets
+        # every layer, but obstacle_layer repopulates from the next
+        # scan and static_layer from the latched map.
+        # ==========================================================
+        self._had_tracks = False
+        self._clear_local = self.create_client(
+            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
+        )
+        self._clear_global = self.create_client(
+            ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
+        )
         self.frame_id = "map"
 
         # ==========================================================
@@ -56,7 +81,7 @@ class PredictedPersonCloudNode(Node):
         # doesn't keep a phantom obstacle forever.
         # ==========================================================
         self.active_tracks = {}       # track_id -> dict(current, predicted, last_seen, heading_sin, heading_cos)
-        self.track_timeout = 0.5        # seconds before a silent track is dropped
+        self.track_timeout = 0.3        # seconds before a silent track is dropped.
         self.publish_rate_hz = 10.0   # cloud publish rate, decoupled from detection rate
 
         # ==========================================================
@@ -202,6 +227,7 @@ class PredictedPersonCloudNode(Node):
         # construction/publishing happens in publish_cloud() so that
         # all active tracks are represented together, not just the
         # one that happened to publish most recently.
+        
         self.active_tracks[track_id] = {
             "current": (current_x, current_y),
             "predicted": (predicted_x, predicted_y),
@@ -213,6 +239,7 @@ class PredictedPersonCloudNode(Node):
         }
 
     def publish_cloud(self):
+        t_start = time.monotonic()
         now = self.get_ros_time_seconds()
 
         # Prune tracks that have gone silent (person out of FOV,
@@ -225,6 +252,12 @@ class PredictedPersonCloudNode(Node):
         for tid in stale_ids:
             del self.active_tracks[tid]
             self.get_logger().info(f"Pruned stale track id:{tid} from obstacle cloud")
+        if not self.active_tracks and self._had_tracks:
+            for c in (self._clear_local, self._clear_global):
+                if c.service_is_ready():
+                    c.call_async(ClearEntireCostmap.Request())
+            self.get_logger().info("All tracks expired - cleared costmaps")
+        self._had_tracks = bool(self.active_tracks)
 
         points = []
 

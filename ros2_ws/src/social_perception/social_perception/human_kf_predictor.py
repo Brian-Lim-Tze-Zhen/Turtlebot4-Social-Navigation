@@ -275,7 +275,7 @@ class HumanKFPredictor(Node):
         self.declare_parameter("input_topic", "/person_positions_map")
         self.declare_parameter("output_topic", "/predicted_person_positions")
         self.declare_parameter("prediction_horizon", 1.0)
-        self.declare_parameter("coast_timeout", 1.5)
+        self.declare_parameter("coast_timeout", 0.6)
         self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
 
         # =====================================
@@ -371,7 +371,6 @@ class HumanKFPredictor(Node):
 
     def person_callback(self, msg):
         now = self.get_ros_time_seconds()
-        self.get_logger().info(f"CLOCKCHK ros_t={now:.3f} wall_t={_wall.time():.3f}")
 
         # ==========================================================
         # THESIS MODIFICATION (ego-motion rotation gate)

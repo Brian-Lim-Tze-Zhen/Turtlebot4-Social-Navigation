@@ -21,7 +21,12 @@ class MovePersonGazebo(Node):
         self.point_b = (1.0, 0.0, 0.0)
 
         self.speed = 1.2       # m/s
-        self.update_dt = 0.2   # seconds
+        self.update_dt = 0.2   # seconds. 0.05 was tried to smooth the set_pose
+                               # teleporting, but each tick spawns a gz service
+                               # subprocess, and 20 Hz of process spawns cost
+                               # ~50 points of RTF. Reverted; the jump-gate
+                               # rejections it targeted were solved by
+                               # process_every_n_frames=2 instead.
 
         # ==================================================
         # THESIS ADDITION (endpoint pause)
