@@ -53,3 +53,6 @@ ros2_ws/eval_plots/
 **/eval_plots/
 *_trial.log
 
+ros2_ws/models/*.pt
+ros2_ws/models/yolov8n_openvino_model/
+ros2_ws/yolov8n.pt
