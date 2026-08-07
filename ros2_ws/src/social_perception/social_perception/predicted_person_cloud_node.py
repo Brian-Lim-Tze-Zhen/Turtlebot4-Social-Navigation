@@ -129,7 +129,7 @@ class PredictedPersonCloudNode(Node):
         # yet, the cloud is published unfiltered (original behavior).
         # ==========================================================
         self.robot_frame = "base_link"
-        self.robot_keepout_radius = 0.25
+        self.robot_keepout_radius = 0.25 # was 0.20
         self.last_robot_xy = None
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -360,7 +360,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.20  # ratio to b=0.30; not yet re-tuned after b changed from 0.20->0.30 — verify pass-side bias in testing
+                    lateral_bias = 0.50 # ratio to b=0.30; not yet re-tuned after b changed from 0.20->0.30 — verify pass-side bias in testing
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -381,8 +381,8 @@ class PredictedPersonCloudNode(Node):
                 # of walking speed. NOTE: thesis prose cites a=1.10/b=0.40; tested worse
                 # for head-on - deployed value is 0.60/0.20.
                 speed = t.get("speed", 0.0)
-                a = min(1.6, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario
-                b = 0.30 # EXPAND WIDTH: Was 0.20 -> 0.30 (Creates a wider hazard lane) (gemini)
+                a = min(3.0, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario
+                b = 0.75 # EXPAND WIDTH: Was 0.20 -> 0.30 (Creates a wider hazard lane) (gemini)
                 # was 0.20. The lane half-width was narrower than the
                 # person disk radius (0.40) it represents, so the
                 # predicted region was half the width of the person.
@@ -421,7 +421,7 @@ class PredictedPersonCloudNode(Node):
                 # ellipse or the rotation-gated disk fallback is active
                 # on a given cycle.
                 # ==========================================================
-                lateral_bias = 0.20
+                lateral_bias = 0.50
                 perp_x = math.sin(heading)
                 perp_y = -math.cos(heading)
                 ellipse_cx += lateral_bias * perp_x
