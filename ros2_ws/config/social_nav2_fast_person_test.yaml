@@ -83,9 +83,9 @@ controller_server:
       # Matches velocity_smoother angular cap.
       wz_max: 1.9
       iteration_count: 1
-      prune_distance: 1.7
+      prune_distance: 2.5 # was 1.7 — let the followers see the bend (finding #1)
       transform_tolerance: 0.1
-      temperature: 0.10 # Was 0.30 (gemini fix for hesitation)
+      temperature: 0.30 # Was 0.30 (gemini fix for hesitation)
       gamma: 0.015
       motion_model: "DiffDrive"
       visualize: true
@@ -116,7 +116,7 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 4.0           # <--- Lower from 12.0 (allows instant lateral swerving at start) (gemini)
+        cost_weight: 1.0         # <--- Lower from 12.0 (allows instant lateral swerving at start) (gemini)
         threshold_to_consider: 0.5
       CostCritic:
         enabled: true
@@ -135,7 +135,7 @@ controller_server:
         # path that runs directly through the person's lane, fighting
         # the obstacle cost. 8.0 lets lateral deviation win when the
         # costmap says the corridor is occupied.
-        cost_weight: 3.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking (gemini)
+        cost_weight: 8.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking (gemini)
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -144,7 +144,7 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.0 # was 5.0
+        cost_weight: 5.0
         offset_from_furthest: 5
         threshold_to_consider: 1.4
       PathAngleCritic:
@@ -183,7 +183,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 1.0
-        inflation_radius: 1.0
+        inflation_radius: 0.5
 
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -342,9 +342,8 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
       # Reset from 2.0/1.5 -> 0.5/1.0 for gentler decay, wider berth
-        cost_scaling_factor: 0.5 # <--- Reset from 0.8 (creates clear open space at spawn) (gemini) 
-        # TEST(1.2m/s): gentler decay, gradient reaches further
-        inflation_radius: 1.0  # TEST(1.2m/s): global plan pre-bends earlier
+        cost_scaling_factor: 3.0   # was 0.5 — steep decay; skimming becomes expensive, walls stay passable
+        inflation_radius: 1.5      # was 1.0 — berth ≈ lane edge + ~1 m
       always_send_full_costmap: true
 
 planner_server:
