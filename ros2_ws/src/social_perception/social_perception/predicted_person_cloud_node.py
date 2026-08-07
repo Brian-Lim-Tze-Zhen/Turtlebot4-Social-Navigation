@@ -360,7 +360,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.20  # matches ellipse b=0.20 below
+                    lateral_bias = 0.20  # ratio to b=0.30; not yet re-tuned after b changed from 0.20->0.30 — verify pass-side bias in testing
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -382,7 +382,11 @@ class PredictedPersonCloudNode(Node):
                 # for head-on - deployed value is 0.60/0.20.
                 speed = t.get("speed", 0.0)
                 a = min(1.6, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario
-                b = 0.20
+                b = 0.30 # EXPAND WIDTH: Was 0.20 -> 0.30 (Creates a wider hazard lane) (gemini)
+                # was 0.20. The lane half-width was narrower than the
+                # person disk radius (0.40) it represents, so the
+                # predicted region was half the width of the person.
+                # 0.30 brings it closer to parity.
                 ellipse_cx = current_x + a * math.cos(heading)
                 ellipse_cy = current_y + a * math.sin(heading)
 
@@ -406,7 +410,8 @@ class PredictedPersonCloudNode(Node):
                 #
                 # perp_x, perp_y = heading rotated -90 deg (clockwise) =
                 # the right-hand side relative to the person's direction
-                # of travel. lateral_bias matched to the current b=0.20
+                # of travel. lateral_bias=0.20, ratio to b=0.30; not yet
+                # re-tuned after b changed from 0.20->0.30 - verify in testing.
                 # (roughly one full short-axis width) — large enough to
                 # clearly favor one side, but re-tune if the pass-behind
                 # gap feels too tight or the bias feels too weak to
