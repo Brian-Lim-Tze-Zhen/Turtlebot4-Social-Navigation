@@ -20,6 +20,9 @@ class MovePersonGazebo(Node):
         self.gz_client = self.create_client(
             SetEntityPose, f"/world/{self.world_name}/set_pose"
         )
+        self.get_logger().info("Waiting for set_pose service...")
+        self.gz_client.wait_for_service()
+        self.get_logger().info("set_pose service ready")
 
         # Movement endpoints in Gazebo world frame
         self.point_a = (8.0, 0.0, 0.0)
@@ -71,9 +74,13 @@ class MovePersonGazebo(Node):
 
     def timer_callback(self):
         now = self.get_clock().now()
+        if not hasattr(self, "_first_tick_done"):
+            self._first_tick_done = True
+            self.last_time = now
+            self.publish_ground_truth()
+            return
         dt = (now - self.last_time).nanoseconds / 1e9
         self.last_time = now
-
         dt = max(0.01, min(dt, self.update_dt * 3.0))
 
         # ==================================================
