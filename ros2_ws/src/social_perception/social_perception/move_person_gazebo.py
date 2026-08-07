@@ -7,6 +7,7 @@ import threading
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, Pose
+from ros_gz_interfaces.srv import SetEntityPose  # <--- 1. ADD THIS IMPORT
 
 
 class MovePersonGazebo(Node):
@@ -15,6 +16,10 @@ class MovePersonGazebo(Node):
 
         self.world_name = "empty_human"
         self.model_name = "person_1"
+        
+        self.gz_client = self.create_client(
+            SetEntityPose, f"/world/{self.world_name}/set_pose"
+        )
 
         # Movement endpoints in Gazebo world frame
         self.point_a = (8.0, 0.0, 0.0)
@@ -127,11 +132,7 @@ class MovePersonGazebo(Node):
         yaw = math.atan2(uy, ux) + math.pi / 2.0
         yaw = math.atan2(math.sin(yaw), math.cos(yaw))
 
-        threading.Thread(
-            target=self.set_model_pose,
-            args=(self.current_x, self.current_y, self.current_z, yaw),
-            daemon=True,
-        ).start()
+        self.set_model_pose(self.current_x, self.current_y, self.current_z, yaw)
 
         self.publish_ground_truth()
 
@@ -152,35 +153,31 @@ class MovePersonGazebo(Node):
         qz = math.sin(yaw / 2.0)
         qw = math.cos(yaw / 2.0)
 
-        service_name = f"/world/{self.world_name}/set_pose"
+        if not self.gz_client.service_is_ready():
+            self.get_logger().warn("set_pose service not ready, skipping this tick")
+            return
 
-        req = (
-            f"name: '{self.model_name}', "
-            f"position: {{x: {x}, y: {y}, z: {z}}}, "
-            f"orientation: {{x: 0, y: 0, z: {qz}, w: {qw}}}"
-        )
+        req = SetEntityPose.Request()
+        req.entity.name = self.model_name
+        req.entity.type = req.entity.MODEL  # matches "name+type" lookup, avoids ambiguous entity resolution
+        req.pose.position.x = x
+        req.pose.position.y = y
+        req.pose.position.z = z
+        req.pose.orientation.x = 0.0
+        req.pose.orientation.y = 0.0
+        req.pose.orientation.z = qz
+        req.pose.orientation.w = qw
 
-        cmd = [
-            "gz", "service",
-            "-s", service_name,
-            "--reqtype", "gz.msgs.Pose",
-            "--reptype", "gz.msgs.Boolean",
-            "--timeout", "3000",
-            "--req", req
-        ]
+        future = self.gz_client.call_async(req)
+        future.add_done_callback(self._set_pose_done)
 
+    def _set_pose_done(self, future):
         try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=6.0
-            )
-            if result.returncode != 0:
-                self.get_logger().warn(f"set_pose failed: {result.stderr}")
-        except subprocess.TimeoutExpired:
-            self.get_logger().warn("set_pose service timeout")
+            result = future.result()
+            if not result.success:
+                self.get_logger().warn("set_pose service call returned failure")
+        except Exception as e:
+            self.get_logger().warn(f"set_pose service call raised: {e}")
 
     def destroy_node(self):
         self.get_logger().info("Stopping move_person_gazebo node")
