@@ -3,9 +3,9 @@ import time
 import math
 import cv2
 import numpy as np
-
-# import torch
-# torch.set_num_threads(2)  # or 1 — start low and measure
+import os
+import torch #(gemini to uncomment)
+torch.set_num_threads(2)  # or 1 — start low and measure (gemini to uncomment)
 
 import rclpy
 from rclpy.node import Node
@@ -35,7 +35,11 @@ class YoloByteTrackPositionNode(Node):
         self.camera_frame = "oakd_rgb_camera_optical_frame"
         self.target_frame = "map"
 
-        self.model = YOLO("/root/thesis_social_navigation_ws/models/yolov8s.pt")
+        export_path = "/root/thesis_social_navigation_ws/models/yolov8n_openvino_model/"
+        if not os.path.isdir(export_path):
+            self.get_logger().info("OpenVINO export not found, exporting once...")
+            YOLO("yolov8n.pt").export(format="openvino", imgsz=320)
+        self.model = YOLO(export_path)
 
         self.frame_count = 0
         self.process_every_n_frames = 2
@@ -295,6 +299,11 @@ class YoloByteTrackPositionNode(Node):
             return None
 
     def rgb_callback(self, msg):
+        # DROP SKIPPED FRAMES IMMEDIATELY (0 CPU COST)
+        self.frame_count += 1
+        if self.frame_count % self.process_every_n_frames != 0:
+            return
+
         t_cb_start = time.monotonic()
         msg_age = self.get_clock().now().nanoseconds * 1e-9 - (
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
@@ -305,10 +314,6 @@ class YoloByteTrackPositionNode(Node):
             return
 
         display_frame = frame.copy()
-
-        self.frame_count += 1
-        if self.frame_count % self.process_every_n_frames != 0:
-            return
 
         if self.latest_depth is None:
             cv2.putText(
@@ -336,6 +341,7 @@ class YoloByteTrackPositionNode(Node):
                 classes=[0],
                 conf=0.70,
                 imgsz=320,
+                device ="cpu", # Use 0 for GPU, or "cpu" if running on CPU (gemini)
                 verbose=False
             )
         inference_ms = (time.monotonic() - t0) * 1000.0
