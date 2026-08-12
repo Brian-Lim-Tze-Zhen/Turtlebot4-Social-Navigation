@@ -426,7 +426,11 @@ def compute_metrics(path, person_tracks):
 # ---------------------------------------------------------------------
 
 def analyse(path):
-    name = os.path.basename(path.rstrip("/"))
+    p_ = path.rstrip("/")
+    name = os.path.basename(p_)
+    # A-layout: bag lives in <trial>/data, snapshots alongside.
+    if name == "data":
+        name = os.path.basename(os.path.dirname(p_))
     try:
         data = read_bag(path)
     except Exception as e:

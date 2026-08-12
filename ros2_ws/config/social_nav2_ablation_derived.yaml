@@ -56,17 +56,17 @@ controller_server:
       # reduce batch_size to 1500.
       time_steps: 120  # TEST(1.2m/s): rollout reach 1.86 -> 2.79 m
       model_dt: 0.05
-      batch_size: 2000 # TEST(1.2m/s): offsets CPU cost of time_steps 180
+      batch_size: 3000  # TEST(1.2m/s): offsets CPU cost of time_steps 180
       ax_max: 3.0
       ax_min: -3.0
       ay_max: 3.0
       az_max: 3.5
-      vx_std: 0.25
+      vx_std: 0.2
       vy_std: 0.2
       # TONIGHT FIX (restored lost tuning): wz_std 0.4 -> 0.9.
       # Wider angular sampling so rollouts actually explore lateral
       # swerves instead of mostly-straight candidates.
-      wz_std: 1.5
+      wz_std: 0.9
       # TONIGHT FIX (restored lost tuning): vx_max 0.5 -> 0.26.
       # Must match velocity_smoother max (0.26). At 0.5 MPPI planned
       # escape maneuvers at speeds the smoother silently clipped,
@@ -96,21 +96,13 @@ controller_server:
       AckermannConstraints:
         min_turning_r: 0.2
       critics: [
-        "ConstraintCritic", "ObstaclesCritic", "GoalCritic",
+        "ConstraintCritic", "CostCritic", "GoalCritic",
         "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
         "PathAngleCritic", "PreferForwardCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-      ObstaclesCritic:
-        enabled: true
-        cost_power: 1
-        critical_weight: 20.0
-        repulsion_weight: 3.0
-        collision_cost: 100000.0
-        consider_footprint: true      # 必须开启，否则按机器人中心点算，不是表面
-        critical_cost: 300.0
       GoalCritic:
         enabled: true
         cost_power: 1
@@ -126,15 +118,15 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0 
         threshold_to_consider: 0.5
-      # CostCritic:
-      #   enabled: true
-      #   cost_power: 1
-      #   cost_weight: 12.0 # Increase slightly relative to PathAlign (gemini)
-      #   critical_cost: 300.0
-      #   consider_footprint: true
-      #   collision_cost: 1000000.0
-      #   near_goal_distance: 1.0
-      #   trajectory_point_step: 2
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 12.0 # Increase slightly relative to PathAlign (gemini)
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
       PathAlignCritic:
         enabled: true
         cost_power: 1
@@ -143,7 +135,7 @@ controller_server:
         # path that runs directly through the person's lane, fighting
         # the obstacle cost. 8.0 lets lateral deviation win when the
         # costmap says the corridor is occupied.
-        cost_weight: 4.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking (gemini)
+        cost_weight: 8.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking (gemini)
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -152,7 +144,7 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 4.0
+        cost_weight: 8.0
         offset_from_furthest: 5
         threshold_to_consider: 1.4
       PathAngleCritic:
@@ -186,12 +178,12 @@ local_costmap:
                   [-0.134,  0.134],
                   [ 0.000,  0.189],
                   [ 0.134,  0.134]]"
-      plugins: ["static_layer", "voxel_layer", "nonpersistent_voxel_layer", "inflation_layer"]
+      plugins: ["static_layer", "voxel_layer", "inflation_layer"]
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 1.0
-        inflation_radius: 1.0
+        inflation_radius: 0.95
 
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -278,7 +270,7 @@ global_costmap:
       # handles social group zones (conversation o-space, static).
       # Complementary layers, same NonPersistentVoxelLayer plugin
       # type for both, different topics.
-      plugins: ["static_layer", "obstacle_layer", "nonpersistent_voxel_layer", "social_group_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true

@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import os
 import torch #(gemini to uncomment)
+import subprocess
 torch.set_num_threads(2)  # or 1 — start low and measure (gemini to uncomment)
 
 import rclpy
@@ -20,6 +21,8 @@ from ultralytics import YOLO
 import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
+
+
 
 
 class YoloByteTrackPositionNode(Node):
@@ -54,7 +57,7 @@ class YoloByteTrackPositionNode(Node):
         # Depth filtering
         self.min_depth = 0.2
         # was: self.max_depth = 7.0
-        self.max_depth = 9.0
+        self.max_depth = 10.0
         self.min_depth_pixels = 50
         self.max_depth_std = 0.30  # meters; rejects bimodal body+background patches
         # Jump rejection in map frame
@@ -440,7 +443,7 @@ class YoloByteTrackPositionNode(Node):
                 #     if now_sec - last_t <= self.jump_timeout:
                 #         jump = math.hypot(map_x - last_x, map_y - last_y)
                 #         if jump > self.max_jump:
-                if 0.0 < (now_sec - last_t) <= self.jump_timeout:
+                if 0.12 < (now_sec - last_t) <= self.jump_timeout:
                     jump = math.hypot(map_x - last_x, map_y - last_y)
                     implied_speed = jump / (now_sec - last_t)
                     if implied_speed > self.max_speed:
@@ -463,6 +466,11 @@ class YoloByteTrackPositionNode(Node):
                                 2
                             )
 
+                        # Anchor forward even on rejection: leaving last_positions
+                        # stale makes the next comparison span a larger gap, so one
+                        # rejection cascades into several. Observed 5 rejections per
+                        # approach, in runs of 2-3 against an unchanged anchor.
+                        self.last_positions[track_id] = (map_x, map_y, now_sec)
                         continue
 
             self.last_positions[track_id] = (map_x, map_y, now_sec)
@@ -529,6 +537,11 @@ class YoloByteTrackPositionNode(Node):
 
 
 def main(args=None):
+    n = subprocess.run(["pgrep", "-fc", "python3.*yolo_detector"],
+                       capture_output=True, text=True).stdout.strip()
+    if n and int(n) > 1:
+        print(f"WARNING: {n} yolo_detector processes running - kill the others first")
+
     rclpy.init(args=args)
 
     node = YoloByteTrackPositionNode()

@@ -200,4 +200,32 @@ RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
 # -----------------------------------------------------
 # Default command
 # -----------------------------------------------------
+# -----------------------------------------------------
+# 12. FIX: OAK-D camera resolution 320x240 -> 640x480
+#
+#     The stock turtlebot4_description defines the simulated
+#     OAK-D at 320x240. At that resolution a person 7-8 m away
+#     occupies a bbox only ~17x52 px, and yolov8n detects them
+#     intermittently: measured 25 s of track_id=-1 with 8 s and
+#     15 s detection gaps, which repeatedly expired the track in
+#     predicted_person_cloud_node and triggered ClearEntireCostmap
+#     mid-approach. The directional ellipse was therefore absent
+#     for most of the head-on encounter.
+#
+#     640x480 makes the same person ~34x104 px. Measured: track
+#     established at 8 m and held continuously to 4 m, zero gaps,
+#     zero costmap clears.
+#
+#     This is NOT inflating the sensor beyond hardware: the real
+#     OAK-D streams 1080p; 320x240 mirrors DepthAI's low-res
+#     "preview" stream, not the camera's capability. 640x480 is
+#     closer to a realistic detection input.
+#
+#     Cost: Gazebo render load ~4x. Measured RTF 58% headless,
+#     camera 22 Hz -> 11 Hz, /person_positions_map 7.5 -> 6.1 Hz.
+# -----------------------------------------------------
+RUN sed -i 's|<width>320</width>|<width>640</width>|; s|<height>240</height>|<height>480</height>|' \
+    /opt/ros/jazzy/share/turtlebot4_description/urdf/sensors/oakd.urdf.xacro
+
+    
 CMD ["bash"]

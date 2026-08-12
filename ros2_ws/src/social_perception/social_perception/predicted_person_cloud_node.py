@@ -8,7 +8,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from nav2_msgs.srv import ClearEntireCostmap
-
+from nav2_msgs.srv import ClearCostmapAroundPose
+from geometry_msgs.msg import PoseStamped
 import tf2_ros
 
 from std_msgs.msg import String, Header
@@ -19,6 +20,11 @@ from sensor_msgs.msg import PointCloud2, PointField
 # symmetric disk rather than a directional ellipse. See the deadband
 # comment in publish_cloud() for the measurements behind this value.
 STATIONARY_SPEED_DEADBAND = 0.05   # m/s
+
+# Predicted-lane geometry. Defined here rather than inline so the trail
+# clearing radius below can be derived from them and stay consistent.
+ELLIPSE_B = 1.20  # lane half-width across heading (m)
+LATERAL_BIAS = 0.40
 
 
 class PredictedPersonCloudNode(Node):
@@ -61,6 +67,26 @@ class PredictedPersonCloudNode(Node):
         self._clear_global = self.create_client(
             ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
         )
+
+        # ==========================================================
+        # THESIS FIX (stale trail): clear a small disk at the person's
+        # position from >= _trail_min_lag metres back, so cells the
+        # ellipse previously occupied are overwritten while the live
+        # zone (back edge at the person's current position) is never
+        # touched. Selecting the point by DISTANCE rather than time
+        # keeps this speed-independent.
+        # ==========================================================
+        self._clear_pose_local = self.create_client(
+            ClearCostmapAroundPose, "/local_costmap/clear_around_pose_local_costmap"
+        )
+        self._clear_pose_global = self.create_client(
+            ClearCostmapAroundPose, "/global_costmap/clear_around_pose_global_costmap"
+        )
+        # Clear radius must cover the outermost ellipse mark, which sits
+        # at lateral_bias + b from the person's path. Derived rather than
+        # tuned, so it stays correct if the lane geometry changes.
+        self._trail_clear_radius = LATERAL_BIAS + ELLIPSE_B + 0.2
+        self._trail_min_lag = self._trail_clear_radius + 0.2
         self.frame_id = "map"
 
         # ==========================================================
@@ -228,6 +254,9 @@ class PredictedPersonCloudNode(Node):
         # all active tracks are represented together, not just the
         # one that happened to publish most recently.
         
+        prev_hist = existing.get("history", []) if existing is not None else []
+        new_hist = (prev_hist + [(current_x, current_y)])[-60:]
+
         self.active_tracks[track_id] = {
             "current": (current_x, current_y),
             "predicted": (predicted_x, predicted_y),
@@ -236,6 +265,7 @@ class PredictedPersonCloudNode(Node):
             "last_seen": self.get_ros_time_seconds(),
             "heading_sin": s,
             "heading_cos": c,
+            "history": new_hist,
         }
 
     def publish_cloud(self):
@@ -260,11 +290,32 @@ class PredictedPersonCloudNode(Node):
         self._had_tracks = bool(self.active_tracks)
 
         points = []
-
+        
         for tid, t in self.active_tracks.items():
             current_x, current_y = t["current"]
             predicted_x, predicted_y = t["predicted"]
+            # THESIS FIX (stale trail) - see __init__. Walk the history
+            # backwards to the most recent point at least _trail_min_lag
+            # behind the person, and clear a disk there. Distance-based
+            # selection makes this independent of walking speed.
+            hist = t.get("history", [])
+            trail_target = None
+            for hx, hy in reversed(hist):
+                if math.hypot(current_x - hx, current_y - hy) > self._trail_min_lag:
+                    trail_target = (hx, hy)
+                    break
 
+            if trail_target is not None:
+                for c in (self._clear_pose_local, self._clear_pose_global):
+                    if c.service_is_ready():
+                        req = ClearCostmapAroundPose.Request()
+                        req.pose.header.frame_id = self.frame_id
+                        req.pose.header.stamp = self.get_clock().now().to_msg()
+                        req.pose.pose.position.x = float(trail_target[0])
+                        req.pose.pose.position.y = float(trail_target[1])
+                        req.pose.pose.orientation.w = 1.0
+                        req.reset_distance = self._trail_clear_radius
+                        c.call_async(req)
             # ==========================================================
             # THESIS MODIFICATION
             #
@@ -360,7 +411,7 @@ class PredictedPersonCloudNode(Node):
                 disk_cy = predicted_y
 
                 if heading is not None:
-                    lateral_bias = 0.50 # ratio to b=0.30; not yet re-tuned after b changed from 0.20->0.30 — verify pass-side bias in testing
+                    lateral_bias = LATERAL_BIAS # ratio to b=0.75
                     disk_cx += lateral_bias * math.sin(heading)
                     disk_cy += lateral_bias * -math.cos(heading)
 
@@ -368,7 +419,7 @@ class PredictedPersonCloudNode(Node):
                     self.make_disk_points(
                         disk_cx,
                         disk_cy,
-                        radius=0.40,
+                        radius=0.55, # was 0.40
                         spacing=0.15,
                         z=0.3
                     )
@@ -381,8 +432,8 @@ class PredictedPersonCloudNode(Node):
                 # of walking speed. NOTE: thesis prose cites a=1.10/b=0.40; tested worse
                 # for head-on - deployed value is 0.60/0.20.
                 speed = t.get("speed", 0.0)
-                a = min(3.0, 0.60 + speed * 0.5)  # TEST: speed-scaled reach, 1.2 m/s fast-person scenario
-                b = 0.75 # EXPAND WIDTH: Was 0.20 -> 0.30 (Creates a wider hazard lane) (gemini)
+                a = min(3.0, 0.60 + speed * 0.5)  # cap raised 1.6->3.0; slope unchanged, so a=1.20 at 1.2 m/s
+                b = ELLIPSE_B # EXPAND WIDTH: Was 0.20 -> 0.30 (Creates a wider hazard lane) (gemini)
                 # was 0.20. The lane half-width was narrower than the
                 # person disk radius (0.40) it represents, so the
                 # predicted region was half the width of the person.
@@ -421,7 +472,7 @@ class PredictedPersonCloudNode(Node):
                 # ellipse or the rotation-gated disk fallback is active
                 # on a given cycle.
                 # ==========================================================
-                lateral_bias = 0.50
+                lateral_bias = LATERAL_BIAS
                 perp_x = math.sin(heading)
                 perp_y = -math.cos(heading)
                 ellipse_cx += lateral_bias * perp_x

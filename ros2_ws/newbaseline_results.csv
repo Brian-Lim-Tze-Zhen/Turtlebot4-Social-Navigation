@@ -1,0 +1,4 @@
+trial,min_distance,path_length,straight_line,path_ratio,max_lateral_dev,commit_dist,dev_at_min,duration_s,mean_speed,n_odom,n_person
+newbaseline_b2000_e120_t01,0.5732,10.1966,8.9174,1.1434,0.8485,2.0918,-0.5581,36.8070,0.2770,2282,160
+newbaseline_b2000_e120_t02,0.6105,9.9736,8.8570,1.1261,0.8600,2.3418,-0.5839,35.6940,0.2794,2214,168
+newbaseline_b2000_e120_t03,0.5630,10.5435,9.0142,1.1697,0.7816,2.1587,-0.5054,39.8880,0.2643,2474,174

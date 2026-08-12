@@ -83,7 +83,7 @@ class HumanTrackKF:
         #   too jittery.
         # ==========================================================
         # was: self.smooth_alpha = 0.12
-        self.tau_rise = 0.5   # s; was 1.3. At 1.2 m/s a walk leg is only ~4 s,
+        self.tau_rise = 0.15   # s; was 1.3. At 1.2 m/s a walk leg is only ~4 s,
                                # so 1.3 s spent most of the encounter still
                                # converging (vel_filt -1.06 vs true -1.21).
                                # Trade-off: less noise on the horizon-multiplied
@@ -276,7 +276,7 @@ class HumanKFPredictor(Node):
         self.declare_parameter("output_topic", "/predicted_person_positions")
         self.declare_parameter("prediction_horizon", 1.0)
         self.declare_parameter("coast_timeout", 0.6)
-        self.declare_parameter("rot_gate_threshold", 0.3)  # rad/s
+        self.declare_parameter("rot_gate_threshold", 0.8)  # rad/s
 
         # =====================================
         # Load parameters
