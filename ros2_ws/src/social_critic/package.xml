@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>social_critic</name>
+  <version>0.1.0</version>
+  <description>
+    MPPI critic scoring trajectories directly against tracked person
+    positions, so social clearance is an explicit parameter rather than
+    an emergent property of costmap inflation decay.
+  </description>
+  <maintainer email="brian.lim-tze-zhen@stud.th-deg.de">Brian Lim Tze Zhen</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>pluginlib</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_mppi_controller</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

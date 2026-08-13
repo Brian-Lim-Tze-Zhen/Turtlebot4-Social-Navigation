@@ -1,0 +1,12 @@
+<class_libraries>
+  <library path="social_critic">
+    <class type="mppi::critics::SocialCritic"
+           base_class_type="mppi::critics::CriticFunction">
+      <description>
+        Penalises MPPI trajectories that come within social_distance of a
+        tracked person, using person coordinates directly rather than the
+        costmap distance field.
+      </description>
+    </class>
+  </library>
+</class_libraries>

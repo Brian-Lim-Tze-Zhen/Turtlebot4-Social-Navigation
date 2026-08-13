@@ -56,3 +56,7 @@ ros2_ws/eval_plots/
 ros2_ws/models/*.pt
 ros2_ws/models/yolov8n_openvino_model/
 ros2_ws/yolov8n.pt
+ros2_ws/*.log
+ros2_ws/*.log.
+ros2_ws/bags/
+*.bak
