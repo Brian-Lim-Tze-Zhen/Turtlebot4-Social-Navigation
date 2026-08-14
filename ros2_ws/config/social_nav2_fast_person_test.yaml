@@ -106,7 +106,7 @@ controller_server:
       ObstaclesCritic:
         enabled: true
         cost_power: 1
-        critical_weight: 10.0
+        critical_weight: 20.0
         repulsion_weight: 3.0
         collision_cost: 100000.0
         consider_footprint: true      # 必须开启，否则按机器人中心点算，不是表面
@@ -128,7 +128,7 @@ controller_server:
         min_coast_speed: 0.15
         max_coast_speed: 2.5
         time_aware: true          # 新增
-        max_prediction_time: 3.0 # 新增
+        max_prediction_time: 3.0  # 新增
       GoalCritic:
         enabled: true
         cost_power: 1
