@@ -18,6 +18,7 @@ ros2 bag record \
   --qos-profile-overrides-path $WS/eval_scripts/tf_qos_override.yaml \
   --topics /person_ground_truth /odom /amcl_pose /tf /tf_static /plan \
            /predicted_person_positions /person_positions_map \
+	   /fused_person_positions \
            /cmd_vel /cmd_vel_smoothed /cmd_vel_nav /collision_monitor_state \
            /optimal_trajectory \
   -o "$BAG/data"
