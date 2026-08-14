@@ -51,7 +51,7 @@ STATIONARY_SPEED_DEADBAND = 0.05   # m/s
 # Ellipse half-width ACROSS the heading. Kept at parity with the person
 # disk radius below: a lane narrower than the person it represents left
 # the predicted region half the width of the body it stood for.
-ELLIPSE_B = 1.2               # m
+ELLIPSE_B = 1.20                   # m
 
 # Ellipse half-length ALONG the heading, as a function of walking speed.
 # At the 1.2 m/s test speed this gives a = 0.60 + 0.60 = 1.20 m, so the
@@ -90,7 +90,7 @@ HISTORY_LENGTH = 60                # positions retained per track
 TRAIL_CLEAR_MARGIN = 0.20          # m
 TRAIL_LAG_MARGIN = 0.20            # m
 
-PERSON_DISK_FORWARD = 0.0   # m，圆盘沿行进方向的前移量
+PERSON_DISK_FORWARD = 0   # m，圆盘沿行进方向的前移量
 
 class PredictedPersonCloudNode(Node):
     def __init__(self):
