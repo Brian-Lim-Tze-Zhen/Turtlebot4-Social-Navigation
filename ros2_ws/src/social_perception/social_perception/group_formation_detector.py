@@ -175,6 +175,23 @@ QUEUE_MIN_SPACING = 0.3      # m; below this, treat as crowd/overlap, not a queu
 QUEUE_MAX_PERP_DEV = 0.4     # m; max perpendicular deviation from fitted line
 QUEUE_MAX_SPEED = 0.4        # m/s; queues can shuffle forward slowly
 
+# THESIS ADDITION (queue hold-open, POSITION-anchored)
+# _detect_queue() rebuilds from scratch each cycle and needs ALL members
+# simultaneously camera-fresh. Measured: robot motion drops the whole
+# roster for 7.5-23.9 s at a time, and ByteTrack reassigns every id when
+# they return (41,48,51,54 -> 57,69,72,74), so an id-keyed hold would not
+# survive either failure. Queue members are static by definition, so
+# their POSITIONS are the stable anchor. Hold re-emits the last confirmed
+# zone while enough cached member positions still have SOME fresh
+# detection near them, whatever it is now called.
+# Values are starting points, not measured optima. TIMEOUT is the ONLY
+# exit: position anchoring gives up early revocation, acceptable for a
+# static queue but a real lag source if the queue ever advances.
+QUEUE_HOLD_TIMEOUT = 10.0    # s; max age of a cached queue before expiry
+QUEUE_HOLD_MIN_VISIBLE = 2   # cached positions that must still match
+QUEUE_HOLD_MATCH_RADIUS = 0.6  # m; well under the 1.2 m member spacing
+LIDAR_ANCHOR_MAX_AGE = 1.0   # s; same freshness standard as camera tracks
+
 # --- Zone sizing (applied to both group types) ---
 ZONE_BUFFER = 0.4            # m; extra margin added around the raw extent
 
@@ -339,6 +356,21 @@ class GroupFormationDetector(Node):
         # opportunistic re-validation whenever framing allows.
         # ==========================================================
         self.confirmed_pairs = {}   # frozenset({id_a, id_b}) -> confirm time
+        # Last geometrically-confirmed queue, for hold-open across
+        # detection dropout. dict: zone (9-tuple), positions {tid:(x,y)}, time.
+        self.queue_hold = None
+        # THESIS ADDITION (lidar anchor evidence for queue hold-open)
+        # Measured: during robot motion the camera goes fully blind for
+        # 5-10 s at a time, while leg_detector never dropped below 4
+        # merged clusters. Lidar is used ONLY as evidence that SOMETHING
+        # still stands where a cached member was - never to create or
+        # reshape a group, because its false-positive rate rises sharply
+        # with robot motion (6 raw clusters parked, up to 20 driving).
+        # Position matching makes that acceptable: the walls it
+        # spuriously clusters sit at y=+-5, far outside the queue.
+        self.lidar_points = {}   # lidar_id -> (x, y, last_seen)
+        self.create_subscription(
+            String, "/lidar_person_clusters", self.lidar_callback, 10)
 
         self.detect_timer = self.create_timer(0.3, self.detect_groups)
 
@@ -397,6 +429,18 @@ class GroupFormationDetector(Node):
             t.bbox_time = now
         t.last_update = now
 
+    def lidar_callback(self, msg):
+        # Format from leg_detector_node.py: "tid,x,y,age"
+        parts = msg.data.split(",")
+        if len(parts) < 3:
+            return
+        try:
+            lid = int(float(parts[0]))
+            x, y = float(parts[1]), float(parts[2])
+        except ValueError:
+            return
+        self.lidar_points[lid] = (x, y, self.get_ros_time_seconds())
+
     # -------------------------------------------------------------
     # Main detection cycle
     # -------------------------------------------------------------
@@ -453,7 +497,42 @@ class GroupFormationDetector(Node):
         # of a queue.
         # ==================================================================
         queue_group = self._detect_queue(active_ids)
-        queue_member_ids = set(queue_group[-1]) if queue_group is not None else set()
+
+        # ==========================================================
+        # THESIS FIX (roster shrinkage overwriting a fuller cache)
+        #
+        # _detect_queue() succeeds on any >=QUEUE_MIN_MEMBERS subset, so
+        # a cycle that momentarily sees only 3 of 4 members returns a
+        # VALID but SHORTER queue - measured half_len collapsing 2.12 ->
+        # 1.58 m, i.e. the tail member silently losing its costmap zone -
+        # and that shorter zone then overwrote the 4-member cache.
+        #
+        # The people did not move; the camera just framed fewer of them.
+        # So a smaller roster is treated as partial observation, not as
+        # a new ground truth: the fuller cached zone is kept and held,
+        # bounded as always by QUEUE_HOLD_TIMEOUT. A roster that is
+        # equal or larger is a genuine improvement and replaces it.
+        # ==========================================================
+        cached_n = (len(self.queue_hold["positions"])
+                    if self.queue_hold is not None else 0)
+
+        # Index -2 is member_ids; -1 is now member_xy (added so the cloud
+        # node no longer has to look positions up by track_id).
+        if queue_group is not None and len(queue_group[-2]) >= cached_n:
+            self.queue_hold = {
+                "zone": queue_group,
+                "positions": {tid: (self.tracks[tid].x, self.tracks[tid].y)
+                              for tid in queue_group[-2]},
+                "time": now,
+            }
+        else:
+            if queue_group is not None:
+                self.get_logger().info(
+                    f"Queue detected with {len(queue_group[-2])} members, "
+                    f"holding cached {cached_n}-member zone instead")
+            queue_group = self._queue_hold_zone(active_ids, now)
+
+        queue_member_ids = set(queue_group[-2]) if queue_group is not None else set()
         if queue_group is not None:
             groups.append(queue_group)
 
@@ -556,7 +635,8 @@ class GroupFormationDetector(Node):
 
         group_id = f"conv_{min(id_a, id_b)}_{max(id_a, id_b)}"
         return (group_id, "conversation", cx, cy, axis_x, axis_y,
-                half_length, half_width, [id_a, id_b])
+                half_length, half_width, [id_a, id_b],
+                [(ta.x, ta.y), (tb.x, tb.y)])
 
     # -------------------------------------------------------------
     # Queue detection - simple line fit + spacing/residual check.
@@ -620,8 +700,95 @@ class GroupFormationDetector(Node):
         member_ids = [tid for _, tid in projections]
         group_id = "queue_" + "_".join(str(i) for i in sorted(member_ids))
 
+        # THESIS ADDITION (member coordinates in the message)
+        # Ordered along the queue axis, same order as member_ids. The
+        # consumer cannot reconstruct N>=3 member positions from
+        # centroid+axis+span, and previously re-looked them up by
+        # track_id from /predicted_person_positions - which collapses
+        # whenever ByteTrack reassigns ids, dropping individual gap
+        # segments from the costmap (measured: 74 -> 37 points, i.e. a
+        # hole opening in the middle of the queue while the detector
+        # still reported all 4 members). This node already holds the
+        # authoritative positions; publishing them removes the
+        # duplicated, id-dependent lookup entirely.
+        member_xy = [(self.tracks[tid].x, self.tracks[tid].y)
+                     for tid in member_ids]
+
         return (group_id, "queue", mean_x, mean_y, axis_x, axis_y,
-                half_length, half_width, member_ids)
+                half_length, half_width, member_ids, member_xy)
+
+    # -------------------------------------------------------------
+    # Queue hold-open, anchored on POSITION rather than track_id.
+    # Returns the cached 9-tuple, or None.
+    # -------------------------------------------------------------
+    def _queue_hold_zone(self, active_ids, now):
+        if self.queue_hold is None:
+            return None
+
+        if now - self.queue_hold["time"] > QUEUE_HOLD_TIMEOUT:
+            self.get_logger().info(
+                f"Queue hold expired after {QUEUE_HOLD_TIMEOUT:.1f}s")
+            self.queue_hold = None
+            return None
+
+        for lid in [l for l, v in self.lidar_points.items()
+                    if now - v[2] > LIDAR_ANCHOR_MAX_AGE]:
+            del self.lidar_points[lid]
+
+        matched = 0
+        lidar_only = 0
+        for cx, cy in self.queue_hold["positions"].values():
+            if any(math.hypot(self.tracks[tid].x - cx,
+                              self.tracks[tid].y - cy) <= QUEUE_HOLD_MATCH_RADIUS
+                   for tid in active_ids):
+                matched += 1
+                continue
+            # Camera lost this member - a lidar cluster standing where it
+            # was counts as evidence the person is still there.
+            if any(math.hypot(lx - cx, ly - cy) <= QUEUE_HOLD_MATCH_RADIUS
+                   for lx, ly, _ in self.lidar_points.values()):
+                matched += 1
+                lidar_only += 1
+
+        if matched < QUEUE_HOLD_MIN_VISIBLE:
+            return None  # weak evidence; cache kept until timeout
+
+        # Full re-anchoring means the queue is still fully observed and
+        # only its track_ids changed, so the cache is re-validated rather
+        # than merely tolerated - otherwise a continuously-visible queue
+        # would still expire on QUEUE_HOLD_TIMEOUT purely from id churn.
+        # A PARTIAL match does not refresh: that is genuine dropout and
+        # must remain bounded by the timeout.
+        # ==========================================================
+        # THESIS FIX (what the hold clock actually measures)
+        #
+        # Previously only a fully CAMERA-confirmed cycle reset the clock,
+        # so a queue whose members were all still observed - just by
+        # lidar - aged out anyway. Measured: matched oscillated 4/4 <->
+        # 2/4 several times a second while nobody moved, and the clock
+        # ran straight through every 4/4 cycle to expire at 10 s.
+        #
+        # FULL coverage means every cached member position still has an
+        # observation on it, whatever the sensor. The queue is occupied;
+        # there is nothing to time out. The clock exists for the case it
+        # was written for: a member with NO observation at all, held
+        # purely on a remembered position. That is the only genuinely
+        # unverified state, and it stays bounded.
+        #
+        # Accepted limitation: lidar confirms occupancy, not identity, so
+        # a full-coverage hold cannot distinguish the same four people
+        # from four different people standing in the same spots. The
+        # camera's own detections resolve this whenever framing allows;
+        # nothing here does.
+        # ==========================================================
+        if matched == len(self.queue_hold["positions"]):
+            self.queue_hold["time"] = now
+
+        self.get_logger().info(
+            f"Queue HELD on {matched}/{len(self.queue_hold['positions'])} "
+            f"anchored ({lidar_only} via lidar), "
+            f"age {now - self.queue_hold['time']:.1f}s")
+        return self.queue_hold["zone"]
 
     # -------------------------------------------------------------
     # Framing gate helper
@@ -707,7 +874,12 @@ class GroupFormationDetector(Node):
     # -------------------------------------------------------------
     def _publish_groups(self, groups):
         for (group_id, group_type, cx, cy, axis_x, axis_y,
-             half_length, half_width, member_ids) in groups:
+             half_length, half_width, member_ids, member_xy) in groups:
+
+            # Field [9]: member coordinates, same order as member_ids,
+            # "x;y|x;y|...". Appended, so consumers parsing only fields
+            # 0-8 are unaffected.
+            xy_str = "|".join(f"{x:.3f};{y:.3f}" for x, y in member_xy)
 
             out = String()
             out.data = (
@@ -716,7 +888,8 @@ class GroupFormationDetector(Node):
                 f"{cx:.3f},{cy:.3f},"
                 f"{axis_x:.3f},{axis_y:.3f},"
                 f"{half_length:.3f},{half_width:.3f},"
-                f"{';'.join(str(i) for i in member_ids)}"
+                f"{';'.join(str(i) for i in member_ids)},"
+                f"{xy_str}"
             )
             self.pub.publish(out)
 

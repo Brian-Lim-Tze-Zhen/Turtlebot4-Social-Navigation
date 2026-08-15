@@ -438,9 +438,29 @@ class SocialGroupCloudNode(Node):
 
             target_gid = matched_gid if matched_gid is not None else group_id
 
+            # THESIS FIX (positions from the message, not an id lookup)
+            # Field [9] carries the members' coordinates in member_ids
+            # order. Previously these were re-looked-up by track_id from
+            # /predicted_person_positions, which fails on every ByteTrack
+            # id reassignment and silently drops gap segments. Falls back
+            # to the old lookup only if the field is absent (older
+            # publisher), so this stays backward compatible.
+            member_xy = None
+            if len(parts) >= 10 and parts[9].strip():
+                try:
+                    member_xy = [tuple(float(v) for v in pair.split(";"))
+                                 for pair in parts[9].strip().split("|")]
+                except ValueError:
+                    member_xy = None
+                if member_xy is not None and len(member_xy) != len(member_ids):
+                    self.get_logger().warn(
+                        "member_xy length does not match member_ids - ignoring")
+                    member_xy = None
+
             self.active_groups[target_gid] = {
                 "type": "queue",
                 "member_ids": member_ids,
+                "member_xy": member_xy,
                 "last_seen": self.now(),
             }
 
@@ -500,10 +520,29 @@ class SocialGroupCloudNode(Node):
     # an oversized, wrongly-shaped fill - worse than just omitting that
     # gap.
     # -----------------------------------------------------------------
-    def make_queue_gap_points(self, member_ids):
+    def make_queue_gap_points(self, member_ids, member_xy=None):
         points = []
         now = self.now()
 
+        # Preferred path: coordinates came with the group message, so
+        # every gap is fillable regardless of id churn.
+        if member_xy is not None:
+            pairs = list(zip(member_xy, member_xy[1:]))
+        else:
+            pairs = None
+
+        if pairs is not None:
+            for (xa, ya), (xb, yb) in pairs:
+                dx, dy = xb - xa, yb - ya
+                separation = math.hypot(dx, dy)
+                a = separation / 2.0 - BODY_CLEARANCE
+                if a < MIN_O_SPACE_HALF_LENGTH:
+                    continue
+                points.extend(self.make_o_space_points(
+                    (xa + xb) / 2.0, (ya + yb) / 2.0, dx, dy, a))
+            return points
+
+        # Legacy fallback: look positions up by track_id.
         for tid_a, tid_b in zip(member_ids, member_ids[1:]):
             cached_a = self.person_positions.get(tid_a)
             cached_b = self.person_positions.get(tid_b)
@@ -556,7 +595,8 @@ class SocialGroupCloudNode(Node):
                     drop.append((gid, "queue: no update within GROUP_TIMEOUT"))
                     continue
 
-                gap_points = self.make_queue_gap_points(g["member_ids"])
+                gap_points = self.make_queue_gap_points(
+                    g["member_ids"], g.get("member_xy"))
                 points.extend(gap_points)
                 if gap_points:
                     published.append(("queue", gid, len(g["member_ids"])))
