@@ -388,6 +388,20 @@ class YoloByteTrackPositionNode(Node):
             conf = float(box.conf[0].cpu().numpy())
             track_id = -1 if box.id is None else int(box.id[0].cpu().numpy())
 
+            # THESIS FIX (unassigned-track sentinel leak) - perception v2
+            # -1 means ByteTrack did not associate this detection with any
+            # existing track. It is a sentinel, not an identity. Publishing
+            # it makes every unassigned detection collide in the same
+            # downstream dict slot (self.last_positions here, self.tracks in
+            # group_formation_detector), producing one phantom "person"
+            # whose position jumps between real people. Benign with a single
+            # pedestrian (head-on: 3.4-13.3% of detections, clustered at
+            # track init and post-encounter); corrupting with four members
+            # (queue PCA collinearity fit).
+            # Trade-off: discards recall to protect identity consistency.
+            if track_id < 0:
+                continue
+
             depth, u, v = self.get_valid_depth_from_bbox(x1, y1, x2, y2)
 
             if depth is None:
