@@ -221,10 +221,24 @@ MAX_LIDAR_ONLY_HOLD = 60.0
 # camera path would have used.
 CONV_MAX_DIST = 1.8
 
-# Drop a group this long after its last message. group_formation_detector
-# publishes at 0.3s, so 1.0s tolerates a couple of missed cycles without
-# leaving a zone frozen in the costmap after the group has dispersed.
-GROUP_TIMEOUT = 1.0
+# Drop a group this long after its last message.
+#
+# THESIS FIX (timeout sized against the MEASURED publish period)
+# The previous value assumed the detector's nominal 0.3 s detect_timer.
+# It does not achieve that: with MobileCLIP inference, the PCA fit and
+# the hold-open anchoring in the same callback, measured inter-message
+# intervals on /social_groups were 0.7 s typical and up to 2.8 s. A 1.0 s
+# timeout therefore expired the group on any slow cycle, and the zone was
+# rebuilt on the next message - producing repeated costmap dropouts
+# (11.1 s total in one 113 s trial) that looked like perception failures
+# but were entirely this consumer discarding a live group.
+#
+# 4.0 s covers the worst measured interval with margin. The cost of the
+# larger value is bounded: a genuinely dispersed group persists for up to
+# 4 s, and queue members are static, so a stale zone here does not chase
+# a moving person. Re-tune if the detector is ever made faster - and
+# measure the interval rather than reading detect_timer.
+GROUP_TIMEOUT = 4.0
 
 # Robot keep-out. Without this, a zone can place lethal cost under the
 # robot's own footprint - the controller then scores every trajectory as

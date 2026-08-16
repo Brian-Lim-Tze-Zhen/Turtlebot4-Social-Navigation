@@ -524,6 +524,7 @@ class GroupFormationDetector(Node):
                 "positions": {tid: (self.tracks[tid].x, self.tracks[tid].y)
                               for tid in queue_group[-2]},
                 "time": now,
+                "dormant": False,
             }
         else:
             if queue_group is not None:
@@ -725,10 +726,13 @@ class GroupFormationDetector(Node):
         if self.queue_hold is None:
             return None
 
-        if now - self.queue_hold["time"] > QUEUE_HOLD_TIMEOUT:
+        if (now - self.queue_hold["time"] > QUEUE_HOLD_TIMEOUT
+                and not self.queue_hold.get("dormant")):
+            # Go dormant rather than forgetting - see the fix note below.
+            self.queue_hold["dormant"] = True
             self.get_logger().info(
-                f"Queue hold expired after {QUEUE_HOLD_TIMEOUT:.1f}s")
-            self.queue_hold = None
+                f"Queue hold dormant after {QUEUE_HOLD_TIMEOUT:.1f}s "
+                f"without full confirmation - positions retained")
             return None
 
         for lid in [l for l, v in self.lidar_points.items()
@@ -751,7 +755,47 @@ class GroupFormationDetector(Node):
                 lidar_only += 1
 
         if matched < QUEUE_HOLD_MIN_VISIBLE:
+            # Logged because this branch is the one that silently stops
+            # /social_groups: an unlogged return here made a 12.9 s zone
+            # outage look like healthy operation in the node's output.
+            self.get_logger().warn(
+                f"Queue hold STARVED: only {matched}/"
+                f"{len(self.queue_hold['positions'])} member positions have "
+                f"any observation (need {QUEUE_HOLD_MIN_VISIBLE}) - not publishing")
             return None  # weak evidence; cache kept until timeout
+
+        # ==========================================================
+        # THESIS FIX (expiry must be dormancy, not amnesia)
+        #
+        # Expiry used to set self.queue_hold = None. Rebuilding then
+        # requires _detect_queue() to succeed, which requires >=3
+        # CAMERA-fresh members - so a queue could not be recovered from
+        # lidar however well lidar was tracking it.
+        #
+        # Measured (t02): camera held 4 stable ids for 10 s, then churned
+        # down to 1-2 ids for the next 15 s. The hold carried the zone to
+        # 17.6 s and expired. Lidar was matching all four cached
+        # positions to within 0.25 m throughout - far inside the 0.6 m
+        # gate - yet the costmap zone stayed empty for 12.8 s until the
+        # camera happened to recover.
+        #
+        # Fix: an expired hold goes DORMANT. It stops publishing, since
+        # a zone unconfirmed by the camera for that long should not steer
+        # the robot, but it keeps its cached positions. If lidar
+        # subsequently re-anchors every member, the queue is demonstrably
+        # still there and publishing resumes.
+        #
+        # The camera remains the only thing that can CREATE a queue or
+        # change its membership. This only restores one it already
+        # established.
+        # ==========================================================
+        if self.queue_hold.get("dormant"):
+            if matched < len(self.queue_hold["positions"]):
+                return None
+            self.queue_hold["dormant"] = False
+            self.queue_hold["time"] = now
+            self.get_logger().info(
+                "Queue hold revived - all members re-anchored")
 
         # Full re-anchoring means the queue is still fully observed and
         # only its track_ids changed, so the cache is re-validated rather
