@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import math
 import time
 import cv2
 import numpy as np
@@ -12,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 
@@ -20,21 +19,24 @@ from ultralytics import YOLO
 
 
 class YoloByteTrackPositionNode(Node):
+
+    @staticmethod
+    def _iou(box_a, box_b):
+        xa1, ya1 = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
+        xa2, ya2 = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
+        inter = max(0.0, xa2 - xa1) * max(0.0, ya2 - ya1)
+        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+        area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
     def __init__(self):
         super().__init__("yolo_bytetrack_position_node")
 
         self.bridge = CvBridge()
 
-        # THESIS FIX (topic mismatch): "/oakd/rgb/preview/image_raw/
-        # compressed" has ZERO publishers in this sim setup (confirmed
-        # via `ros2 topic info --verbose`) - it only appeared in
-        # `ros2 topic list` because this node's own subscription
-        # registers it. Nothing compresses/republishes the camera feed
-        # here. The raw topic below has a real publisher (camera_bridge
-        # node, sensor_msgs/Image, RELIABLE) - subscribing there
-        # instead. A BEST_EFFORT subscriber can connect to a RELIABLE
-        # publisher (downgrade is allowex`d by ROS2's QoS compatibility
-        # rules), so sensor_qos below doesn't need to change.
+        # Simulation uses raw Image on /oakd/rgb/preview/image_raw
+        # (real robot uses CompressedImage on /turtlebot4/oakd/...)
         self.rgb_topic = "/oakd/rgb/preview/image_raw"
 
         export_path = "/root/thesis_social_navigation_ws/src/social_perception/social_perception/Lidar/yolov8n-pose_openvino_model/"
@@ -46,6 +48,8 @@ class YoloByteTrackPositionNode(Node):
         # COCO keypoint indices: 13=L knee,14=R knee,15=L ankle,16=R ankle
         self.leg_kpt_idx = [13, 14, 15, 16]
         self.leg_kpt_min_conf = 0.3
+        # In simulation the camera sees the full person body so 0.2 is fine.
+        # Real robot: 0.45 (camera pitched down, only legs in frame).
         self.min_publish_conf = 0.2
 
         self.frame_count = 0
@@ -54,34 +58,8 @@ class YoloByteTrackPositionNode(Node):
 
         self.pub = self.create_publisher(String, "/person_positions_map", 10)
 
-        # ==========================================================
-        # THESIS ADDITION (bearing-based fusion)
-        #
-        # This node has no depth/TF, so it cannot compute a position -
-        # only a 2D pixel location. To let identity_fusion_node.py
-        # match a camera detection to a LIDAR cluster without a
-        # position, we convert pixel x to a BEARING (angle from the
-        # camera's optical axis) and match by angle instead of by
-        # (x,y) distance.
-        #
-        # Proper way: pinhole model using camera_info's fx, cx -
-        # bearing = atan2(px - cx, fx). Subscribed below; if
-        # camera_info never arrives (unconfirmed whether this camera
-        # publishes it), falls back to a linear pixel-fraction-of-FOV
-        # approximation using FALLBACK_HFOV_DEG. That fallback is a
-        # rough approximation (not a true pinhole projection) and its
-        # FOV value is an assumed OAK-D RGB preview-stream figure, NOT
-        # verified against this specific camera/crop - calibrate
-        # against a known real-world bearing if the angular gate in
-        # identity_fusion_node.py needs tightening.
-        # ==========================================================
-        self.camera_info_received = False
-        self.fx = None
-        self.cx = None
-        self.FALLBACK_HFOV_DEG = 69.0  # unverified assumption - see note above
-        self.create_subscription(
-            CameraInfo, "/oakd/rgb/preview/camera_info",
-            self._camera_info_callback, 10)
+        # Bearing is computed by identity_fusion_node_lidar.py from the
+        # bbox centre — no camera_info subscription needed here.
 
         # ==========================================================
         # THESIS FIX (frame staleness)
@@ -101,27 +79,9 @@ class YoloByteTrackPositionNode(Node):
 
         self.create_subscription(Image, self.rgb_topic, self.rgb_callback, sensor_qos)
 
-        self.get_logger().info("YOLO + ByteTrack leg-keypoint node started (no depth/TF - LIDAR fusion handles range)")
+        self.get_logger().info("YOLO + ByteTrack leg-keypoint node started (bearing computed by fusion node)")
         self.get_logger().info(f"RGB topic: {self.rgb_topic}")
         self.get_logger().info(f"Publishing: /person_positions_map")
-
-    def _camera_info_callback(self, msg):
-        if not self.camera_info_received:
-            self.fx = msg.k[0]
-            self.cx = msg.k[2]
-            self.camera_info_received = True
-            self.get_logger().info(
-                f"camera_info received: fx={self.fx:.1f}, cx={self.cx:.1f} "
-                f"- using true pinhole bearing from here on")
-
-    def _pixel_x_to_bearing(self, px, image_width):
-        """Bearing in radians, positive = right of camera centre."""
-        if self.camera_info_received:
-            return math.atan2(px - self.cx, self.fx)
-        # Fallback: linear pixel-fraction-of-FOV, not a true pinhole
-        # projection - acceptable approximation only near image centre.
-        frac = (px - image_width / 2.0) / image_width
-        return frac * math.radians(self.FALLBACK_HFOV_DEG)
 
     def rgb_callback(self, msg):
         # DROP SKIPPED FRAMES IMMEDIATELY (0 CPU COST)
@@ -129,19 +89,11 @@ class YoloByteTrackPositionNode(Node):
         if self.frame_count % self.process_every_n_frames != 0:
             return
 
-        # THESIS ADDITION (readability): this node previously logged
-        # NOTHING at all when no person was confidently detected -
-        # matching the "(idle)" heartbeat pattern already used in
-        # lidar_person_detector.py so total silence in the terminal is
-        # diagnosable (frames arriving, no person seen) rather than
-        # ambiguous with "rgb_callback never fires at all".
         now_s = time.monotonic()
         if not hasattr(self, "_last_heartbeat"):
             self._last_heartbeat = 0.0
         if now_s - self._last_heartbeat > 5.0:
-            self.get_logger().info(
-                f"(alive) frame #{self.frame_count} processed - "
-                f"camera_info={'yes' if self.camera_info_received else 'NOT YET'}")
+            self.get_logger().info(f"(alive) frame #{self.frame_count} processed")
             self._last_heartbeat = now_s
 
         t_cb_start = time.monotonic()
@@ -184,7 +136,24 @@ class YoloByteTrackPositionNode(Node):
                 cv2.waitKey(1)
             return
 
+        # IoU dedup: drop lower-confidence boxes that overlap a
+        # higher-confidence one above threshold (same-person split boxes).
+        DEDUP_IOU_THRESHOLD = 0.45
+        boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+        confs = result.boxes.conf.cpu().numpy()
+        order = sorted(range(len(boxes_xyxy)), key=lambda i: -confs[i])
+        keep = []
+        for i in order:
+            if any(self._iou(boxes_xyxy[i], boxes_xyxy[j]) > DEDUP_IOU_THRESHOLD
+                   for j in keep):
+                continue
+            keep.append(i)
+        keep_set = set(keep)
+
         for box_i, box in enumerate(result.boxes):
+            if box_i not in keep_set:
+                continue
+
             xyxy = box.xyxy[0].cpu().numpy()
             x1, y1, x2, y2 = xyxy.astype(int)
 
@@ -223,9 +192,7 @@ class YoloByteTrackPositionNode(Node):
 
             # Fields: track_id, conf, x1, y1, x2, y2, leg keypoints
             # as "px:py" pairs separated by ';' (variable count, 0-4).
-            # No bearing here anymore - identity_fusion_node_lidar.py
-            # computes it from bbox center, matching the real-robot
-            # architecture (see that file for the fixed-HFOV method).
+            # Bearing computed by identity_fusion_node_lidar.py from bbox centre.
             out = String()
             out.data = (
                 f"{track_id},"

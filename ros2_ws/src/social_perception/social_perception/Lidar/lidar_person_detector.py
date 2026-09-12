@@ -22,7 +22,7 @@ class LidarPersonDetector(Node):
         # =====================================
         # Parameters
         # =====================================
-        self.declare_parameter("scan_topic", "/turtlebot4/scan")
+        self.declare_parameter("scan_topic", "/scan")
         # THESIS FIX (topic mismatch): identity_fusion_node.py's
         # lidar_topic parameter defaults to "/lidar_person_clusters".
         # This was previously "person_positions_base" (no leading slash,
@@ -644,7 +644,13 @@ class LidarPersonDetector(Node):
             # so no track steals another's cluster and gets pushed onto
             # a distant one. MEASURED: teleports 18->3, 19->2, 1->0.
             for i in unmatched:
-                if i in static_idx and t.get("static_streak", 0) >= 3:
+                # Only evict unconfirmed tracks from static candidates.
+                # A confirmed track must keep matching even if its cluster
+                # temporarily lands on a mapped-occupied cell (person walking
+                # near furniture, or robot rotation shifting map-frame coords).
+                if (i in static_idx
+                        and not t.get("confirmed", False)
+                        and t.get("static_streak", 0) >= 3):
                     continue
                 d = math.hypot(
                     transformed[i][0] - pred_x, transformed[i][1] - pred_y
