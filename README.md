@@ -16,7 +16,7 @@ direction-oriented elliptical risk zone published into the local costmap.
 Clone the repo and build the image:
 
     git clone git@github.com:Brian-Lim-Tze-Zhen/Turtlebot4-Social-Navigation.git
-    cd Turtlebot4-Social-Navigation/docker_jazzy
+    cd Turtlebot4-Social-Navigation/docker
     docker compose build
     docker compose up -d
 
@@ -64,7 +64,7 @@ in AMCL localization mode, not SLAM).
 `model://` URIs via `GZ_SIM_RESOURCE_PATH` for nested custom models when
 Gazebo is spawned through `ros2 launch` (confirmed empirically: works for
 a standalone `gz sim` call, fails under `ros2 launch` with the identical
-environment). `docker_jazzy/setup_gazebo_worlds.sh` works around this by
+environment). `docker/setup_gazebo_worlds.sh` works around this by
 copying custom worlds/models into `turtlebot4_gz_bringup`'s own installed
 `worlds/` directory at container startup, and is also called explicitly
 at the top of `run_sim.sh` for non-interactive invocations.
@@ -78,13 +78,21 @@ intact per `model.config`.
 
 ## Repository structure
 
-    docker_jazzy/        Dockerfile, docker-compose.yaml, Gazebo world-sync script
-    ros2_ws/
-      config/            Nav2 parameter files
-      maps/              Static map for AMCL localization
-      simulation_models/ Custom worlds + person_standing model (Gazebo's stock
-                          model library, temp_models/, is excluded - see
-                          setup_gazebo_worlds.sh / Dockerfile to regenerate)
-      src/social_perception/  ROS2 package: detection, prediction, costmap
-                               integration nodes
-      run_sim.sh         Full simulation launch script
+    docker/              Dockerfile, docker-compose.yaml, Gazebo world-sync script
+                         docker/notes/ — debugging notes (TF issues, QoS, etc.)
+    ros2_ws/             (mounted as /root/thesis_social_navigation_ws in container)
+      src/
+        social_perception/   ROS2 package: YOLO detection, KF prediction,
+                              cloud publisher, person mover, group detection
+        social_critic/       C++ Nav2 critic plugin
+      config/
+        social_nav2.yaml     Base Nav2 config (full social pipeline)
+        ablation/            Per-ablation-condition configs (A–E)
+      launch/              Launch files (simulation scenarios, perception stack)
+      analysis/            Offline evaluation scripts + QoS override YAML
+      maps/                Static map for AMCL localization
+      simulation_models/   Custom Gazebo worlds + person_standing model
+                           (temp_models/ is excluded — see Dockerfile to regenerate)
+      behavior_trees/      Custom Nav2 BT XMLs
+      run_sim.sh           Full simulation launch script
+      record_trial.sh      Bag recording with provenance snapshots

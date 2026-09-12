@@ -18,7 +18,7 @@ N=$(ps aux | grep -c "[y]olo_detector" || true)
 [ "$N" -eq 1 ] || { echo "ERROR: yolo_detector count = $N (need 1)"; exit 1; }
 
 mkdir -p "$BAG"
-cp $WS/config/social_nav2_ablation_E_critweight20_socialcritic_on.yaml "$BAG/config_used.yaml"
+cp $WS/config/ablation/social_nav2_ablation_E_critweight20_socialcritic_on.yaml "$BAG/config_used.yaml"
 cp $WS/src/social_perception/social_perception/predicted_person_cloud_node.py "$BAG/cloud_node_used.py"
 cp $WS/src/social_perception/social_perception/human_kf_predictor.py "$BAG/kf_used.py"
 cp $WS/src/social_perception/social_perception/move_person_oneway.py "$BAG/mover_used.py"
@@ -55,7 +55,7 @@ BT replan rate: unchanged from the head-on scenario (no override applied).
 NOTES
 
 ros2 bag record \
-  --qos-profile-overrides-path $WS/eval_scripts/tf_qos_override.yaml \
+  --qos-profile-overrides-path $WS/analysis/tf_qos_override.yaml \
   --topics /person_ground_truth /odom /amcl_pose /tf /tf_static /plan \
            /predicted_person_positions /person_positions_map \
 	   /fused_person_positions \

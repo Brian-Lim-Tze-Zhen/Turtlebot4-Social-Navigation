@@ -37,14 +37,17 @@ __pycache__/
 *.swp
 output.log
 ros2_ws/.claude/
-ros2_ws/CLAUDE.md
+# CLAUDE.md lives at repo root now
 ros2_ws/debug_notes_2026-06-24.md
+# Personal thesis writing notes - not source code
+notes/
 
 *.log
 ros2_ws/bags/
 ros2_ws/*.png
 ros2_ws/*.jpg
 ros2_ws/eval_plots/
+ros2_ws/analysis/eval_plots/
 
 # Trial run logs and evaluation outputs - regenerate per-run, don't
 # accumulate test-run artifacts in git history (same rationale as
@@ -56,6 +59,10 @@ ros2_ws/eval_plots/
 ros2_ws/models/*.pt
 ros2_ws/models/yolov8n_openvino_model/
 ros2_ws/yolov8n.pt
+# OpenVINO model files — re-exportable from weights, don't store binaries in git
+**/*_openvino_model/
+# Scenario snapshot log files
+**/Lidar/logs/
 ros2_ws/*.log
 ros2_ws/*.log.
 ros2_ws/bags/
