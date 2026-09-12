@@ -23,7 +23,6 @@ from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from nav2_msgs.srv import ClearEntireCostmap
-from nav2_msgs.srv import ClearCostmapAroundPose
 import tf2_ros
 
 from std_msgs.msg import String, Header
@@ -61,7 +60,7 @@ ELLIPSE_EXIT_SPEED = 0.03    # m/s; must drop below this to fall back to disk
 # Ellipse half-width ACROSS the heading. Kept at parity with the person
 # disk radius below: a lane narrower than the person it represents left
 # the predicted region half the width of the body it stood for.
-ELLIPSE_B = 0.8               # m (shrunk from 1.20 - was wider than long, causing round/omnidirectional footprint)
+ELLIPSE_B = 0.6          # m (shrunk from 1.20 - was wider than long, causing round/omnidirectional footprint)
 
 # Ellipse half-length ALONG the heading, as a function of walking speed.
 # At the 1.2 m/s test speed this gives a = 0.60 + 0.60 = 1.20 m, so the
@@ -73,7 +72,7 @@ ELLIPSE_A_MAX = 3.00               # m
 # Perpendicular offset of the lane, breaking head-on left/right symmetry
 # deterministically (social "keep right"). Ratio to ELLIPSE_B is
 # 0.40/1.20 = 0.33.
-LATERAL_BIAS = 0.4 # m
+LATERAL_BIAS = 0.20 # m
 
 # THESIS MODIFICATION (dynamic pass-side, replaces fixed keep-right)
 #
@@ -93,7 +92,7 @@ LATERAL_BIAS = 0.4 # m
 # Below LATERAL_SIDE_DEADBAND perpendicular distance from the person's
 # heading line, the side estimate is dominated by noise (robot near
 # the centreline / near-head-on approach), so the last committed side
-# is held rather than recomputed — recomputing every cycle here is
+# is held rather than recomputed - recomputing every cycle here is
 # exactly the kind of frame-to-frame flip that produces hesitation.
 LATERAL_SIDE_DEADBAND = 0.15      # m
 
@@ -127,7 +126,7 @@ ENABLE_DYNAMIC_PASS_SIDE = False
 # used when the ellipse is suppressed. Same radius, different sampling:
 # the current-position disk is denser because it is what the local
 # planner collides against.
-PERSON_DISK_RADIUS = 0.55    # m
+PERSON_DISK_RADIUS = 0.6   # m (0.5 -> 0.7 tested 10 Sep: 0.7 gave correct marks at 202 pts but robot stopped, corridor too narrow for lane+inflation; 0.6 under test to bracket the limit)
 PERSON_DISK_SPACING = 0.10         # m
 FALLBACK_DISK_SPACING = 0.15       # m
 ELLIPSE_SPACING = 0.15             # m
@@ -137,7 +136,7 @@ ELLIPSE_SPACING = 0.15             # m
 # must not be widened.
 ROBOT_KEEPOUT_RADIUS = 0.20       # m
 
-TRACK_TIMEOUT = 0.30               # s before a silent track is dropped
+TRACK_TIMEOUT = 1.00               # s before a silent track is dropped
 PUBLISH_RATE_HZ = 10.0             # cloud rate, decoupled from detection
 HEADING_SMOOTH_ALPHA = 0.40        # EMA on the heading sin/cos
 HEADING_MIN_DISPLACEMENT = 0.15    # m; below this, hold the last heading
@@ -296,9 +295,17 @@ class PredictedPersonCloudNode(Node):
         # the point by DISTANCE rather than time keeps this
         # independent of walking speed.
         # ==========================================================
-        self._clear_pose_local = self.create_client(
-            ClearCostmapAroundPose,
-            "/local_costmap/clear_around_pose_local_costmap")
+        # THESIS FIX (Humble compat): ClearCostmapAroundPose does not
+        # exist in Humble's nav2_msgs (added in a later distro) - the
+        # client below is dead code on this ROS version. Left declared
+        # but unused so _clear_trail() can fail safe (service_is_ready()
+        # returns False for a client with no matching server, which is
+        # also true here since the type doesn't exist to import).
+        # Stale trail marks still get cleaned up by the periodic full
+        # clear (_periodic_safety_clear, every 3s) and the non-empty ->
+        # empty transition clear - just at lower frequency than the
+        # 10Hz per-track trail clear this was meant to provide.
+        self._clear_pose_local = None
         self._trail_clear_radius = LATERAL_BIAS + ELLIPSE_B + TRAIL_CLEAR_MARGIN
         self._trail_min_lag = self._trail_clear_radius + TRAIL_LAG_MARGIN
 
@@ -363,7 +370,8 @@ class PredictedPersonCloudNode(Node):
         # rather than raise PUBLISH_RATE_HZ.
         # ==========================================================
         self._periodic_clear_period_s = 3.0
-        self.create_timer(self._periodic_clear_period_s, self._periodic_safety_clear)
+        # THESIS FIX (real robot): periodic full clear disabled - it wiped walls + lidar marks mid-encounter (lethal 830 -> 380 in local costmap). NonPersistentVoxelLayer rebuilds from the latest cloud each cycle, so trail marks cannot persist there.
+        # self.create_timer(self._periodic_clear_period_s, self._periodic_safety_clear)
 
         self.get_logger().info("Predicted person cloud node started")
         self.get_logger().info("Subscribing: /predicted_person_positions")
@@ -591,31 +599,17 @@ class PredictedPersonCloudNode(Node):
         self._had_tracks = bool(self.active_tracks)
 
     def _clear_trail(self, track):
-        """Clear a disk at the oldest history point still far enough back."""
-        current_x, current_y = track["current"]
-        target = None
-        for hx, hy in reversed(track.get("history", [])):
-            if math.hypot(current_x - hx, current_y - hy) > self._trail_min_lag:
-                target = (hx, hy)
-                break
-        if target is None:
-            return
-        if not self._clear_pose_local.service_is_ready():
-            return
+        """No-op on Humble: ClearCostmapAroundPose does not exist in
+        this distro's nav2_msgs (see __init__ note on
+        self._clear_pose_local). Stale trail marks are still cleaned
+        up by the periodic full clear and the non-empty->empty
+        transition clear, just at lower frequency.
 
-        req = ClearCostmapAroundPose.Request()
-        req.pose.header.frame_id = self.frame_id
-        # Zero/unstamped time tells Nav2's TF lookup to use the latest
-        # available transform rather than an exact timestamp. Using
-        # get_clock().now() here raced TF's base_link->odom buffer by a
-        # few ms under sim time, causing intermittent "extrapolation into
-        # the future" lookup failures inside controller_server.
-        req.pose.header.stamp = rclpy.time.Time().to_msg()
-        req.pose.pose.position.x = float(target[0])
-        req.pose.pose.position.y = float(target[1])
-        req.pose.pose.orientation.w = 1.0
-        req.reset_distance = self._trail_clear_radius
-        self._clear_pose_local.call_async(req)
+        Original per-track logic (restore if upgrading past Humble):
+        find the oldest history point still >= self._trail_min_lag from
+        the current position, then call ClearCostmapAroundPose with
+        that point and self._trail_clear_radius as reset_distance."""
+        return
 
     def _track_points(self, track):
         current_x, current_y = track["current"]
@@ -876,9 +870,22 @@ class PredictedPersonCloudNode(Node):
                 if t.get("rotation_gated", False)
             ]
             gated_str = f" [ROT GATED: {','.join(gated)}]" if gated else ""
+            # THESIS DEBUG (position-follow verification): log each
+            # active track's own "current" (x, y) - the exact value
+            # _track_points() builds the cloud from - alongside the
+            # existing summary line. Lets a claim like "the cloud isn't
+            # following the person" be checked directly against this
+            # node's own input, cycle for cycle, instead of only
+            # against human_kf_predictor's log (which only proves the
+            # UPSTREAM position is right, not that this node used it
+            # correctly). No behavior change - log line only.
+            positions_str = ",".join(
+                f"{tid}:({t['current'][0]:.2f},{t['current'][1]:.2f})"
+                for tid, t in self.active_tracks.items()
+            )
             self.get_logger().info(
                 f"Published cloud for {len(self.active_tracks)} track(s) "
-                f"[{ids}] points={len(points)}{gated_str}")
+                f"[{ids}] points={len(points)}{gated_str} pos=[{positions_str}]")
 
     def _deduplicated_tracks(self):
         """Collapse tracks that sit on top of each other into one.

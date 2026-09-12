@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 import time as _wall 
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 
@@ -61,6 +62,14 @@ class HumanTrackKF:
         # measured against real occlusion trials yet - tune once you have
         # logged camera_confirmed vs lidar_only sequences to compare.
         self.lidar_only_noise_scale = 3.0
+        # THESIS FIX (static-object false lock): a track that's been
+        # lidar_only AND near-stationary for too long is very likely
+        # anchored on a static object (furniture, wall), not a real person
+        # who just stopped moving out of camera view. Cap how long that
+        # combination is tolerated before the track is dropped outright.
+        self.lidar_only_stall_timeout = 5.0   # s
+        self.lidar_only_stall_speed = 0.05    # m/s; below this counts as "stalled"
+        self.lidar_only_stall_since = None
 
         # Measurement matrix: only position x, y is measured
         self.H = np.array([
@@ -296,7 +305,6 @@ class HumanTrackKF:
 class HumanKFPredictor(Node):
     def __init__(self):
         super().__init__("human_kf_predictor")
-
         # =====================================
         # User configurable parameters
         # =====================================
@@ -311,7 +319,7 @@ class HumanKFPredictor(Node):
         self.declare_parameter("input_topic", "/person_positions_fused")
         self.declare_parameter("output_topic", "/predicted_person_positions")
         self.declare_parameter("prediction_horizon", 1.0)
-        self.declare_parameter("coast_timeout", 0.6)
+        self.declare_parameter("coast_timeout", 1.5)
         self.declare_parameter("rot_gate_threshold", 0.8)  # rad/s
 
         # =====================================
@@ -379,12 +387,22 @@ class HumanKFPredictor(Node):
             10
         )
 
-        # Subscribe to /odom for robot angular velocity
+        # Subscribe to /odom for robot angular velocity.
+        # THESIS FIX (QoS mismatch): TurtleBot4 publishes /odom BEST_EFFORT;
+        # the rclpy default subscription QoS is RELIABLE, which is
+        # incompatible - messages never arrived, silently keeping
+        # robot_angular_z frozen at 0.0 and the rotation gate always
+        # inactive. Match the publisher's policy explicitly.
+        odom_qos = QoSProfile(
+            depth=20,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+        )
         self.odom_sub = self.create_subscription(
             Odometry,
             "/odom",
             self.odom_callback,
-            20
+            odom_qos
         )
 
         # Coast timer: publish predictions for recently-seen tracks even when
@@ -447,14 +465,6 @@ class HumanKFPredictor(Node):
             source = parts[11] if len(parts) > 11 else "camera_confirmed"
             is_lidar_only = (source == "lidar_only")
 
-            bbox_str = "none"
-            if not is_lidar_only and len(parts) >= 11:
-                try:
-                    bx1, by1, bx2, by2 = (int(float(p)) for p in parts[7:11])
-                    bbox_str = f"{bx1};{by1};{bx2};{by2}"
-                except ValueError:
-                    bbox_str = "none"
-
         except Exception as e:
             self.get_logger().warn(
                 f"Could not parse message: {msg.data} | error: {e}"
@@ -471,6 +481,29 @@ class HumanKFPredictor(Node):
         track.last_conf = conf
         track.update(base_x, base_y, now, freeze_velocity=freeze_velocity,
                      is_lidar_only=is_lidar_only)
+        # THESIS FIX (static-object false lock): drop a track that's
+        # been lidar_only and essentially motionless for too long -
+        # a real person who left camera view either keeps moving or
+        # eventually leaves lidar range too; one that just sits still
+        # indefinitely on lidar_only is much more likely anchored on
+        # a static object than a person who happens to be standing
+        # perfectly still just out of camera view.
+        speed = math.hypot(
+            track.vx_filt if track.vx_filt is not None else 0.0,
+            track.vy_filt if track.vy_filt is not None else 0.0,
+        )
+        if is_lidar_only and speed < track.lidar_only_stall_speed:
+            if track.lidar_only_stall_since is None:
+                track.lidar_only_stall_since = now
+            elif now - track.lidar_only_stall_since > track.lidar_only_stall_timeout:
+                self.get_logger().info(
+                    f"Dropped id:{track_id} - lidar_only + stationary for "
+                    f"{now - track.lidar_only_stall_since:.1f}s (likely static object)"
+                )
+                del self.tracks[track_id]
+                return
+        else:
+            track.lidar_only_stall_since = None
 
         x, y, vx, vy, pred_x, pred_y, vx_raw, vy_raw = track.predict_future(self.prediction_horizon)
 
@@ -482,8 +515,7 @@ class HumanKFPredictor(Node):
             f"{vx:.3f},{vy:.3f},"
             f"{pred_x:.3f},{pred_y:.3f},"
             f"{self.prediction_horizon:.2f},"
-            f"{1 if freeze_velocity else 0},"    # field [9] — rotation gate active
-            f"{bbox_str}"                       # field [10] — bbox "x1;y1;x2;y2" or "none"
+            f"{1 if freeze_velocity else 0}"    # field [9] — rotation gate active
         )
 
         self.pub.publish(out)
@@ -523,8 +555,7 @@ class HumanKFPredictor(Node):
                 f"{vx:.3f},{vy:.3f},"
                 f"{pred_x:.3f},{pred_y:.3f},"
                 f"{self.prediction_horizon:.2f},"
-                f"0,"                               # field [9] — rotation gate (always inactive on coast)
-                f"none"                              # field [10] — no fresh bbox while coasting
+                f"0"                               # field [9] — rotation gate (always inactive on coast)
             )
             self.pub.publish(out)
 

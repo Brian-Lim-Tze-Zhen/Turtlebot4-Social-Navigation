@@ -6,6 +6,11 @@ lidar_person_detector:
     # map filter on; confirmed tracks exempt from streak eviction (patched)
     static_occupancy_threshold: 50
 
+identity_fusion_node:
+  ros__parameters:
+    # Simulation camera is 640px wide; real robot is 250px (cropped preview)
+    camera_preview_width: 640
+
 move_person_oneway:
   ros__parameters:
     use_sim_time: true
