@@ -48,6 +48,7 @@ ros2_ws/*.png
 ros2_ws/*.jpg
 ros2_ws/eval_plots/
 ros2_ws/analysis/eval_plots/
+ros2_ws/logs/
 
 # Trial run logs and evaluation outputs - regenerate per-run, don't
 # accumulate test-run artifacts in git history (same rationale as
@@ -72,3 +73,5 @@ ros2_ws/bags/
 *.bak
 *.bak[0-9]
 *.bak_*
+ros2_ws/debug_crops/
+*.orig
