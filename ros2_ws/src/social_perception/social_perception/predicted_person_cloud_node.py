@@ -51,7 +51,7 @@ STATIONARY_SPEED_DEADBAND = 0.05   # m/s
 # Ellipse half-width ACROSS the heading. Kept at parity with the person
 # disk radius below: a lane narrower than the person it represents left
 # the predicted region half the width of the body it stood for.
-ELLIPSE_B = 1.20                   # m
+ELLIPSE_B = 0.60                   # m (shrunk from 1.20 - was wider than long, causing round/omnidirectional footprint)
 
 # Ellipse half-length ALONG the heading, as a function of walking speed.
 # At the 1.2 m/s test speed this gives a = 0.60 + 0.60 = 1.20 m, so the
@@ -63,13 +63,61 @@ ELLIPSE_A_MAX = 3.00               # m
 # Perpendicular offset of the lane, breaking head-on left/right symmetry
 # deterministically (social "keep right"). Ratio to ELLIPSE_B is
 # 0.40/1.20 = 0.33.
-LATERAL_BIAS = 0.4  # m
+LATERAL_BIAS = 0.20  # m
+
+# THESIS MODIFICATION (dynamic pass-side, replaces fixed keep-right)
+#
+# The original fixed bias (always toward the person's right) only
+# resolves head-on symmetry when the robot happens to already be on
+# that side. Spawn the robot on the opposite side, or in a corridor
+# narrow enough that the fixed bias eats the robot's own margin (e.g.
+# a 0.5 m lateral offset against a 0.4 m bias), and the ellipse can
+# push into space the robot has no room to vacate.
+#
+# Instead, bias toward whichever side the robot is CURRENTLY on: this
+# nudges the ellipse into the robot's own lane, forcing it toward the
+# empty opposite lane, regardless of which side that happens to be.
+# This generalises the old fixed case (robot always spawned on the
+# person's right) rather than replacing its mechanism.
+#
+# Below LATERAL_SIDE_DEADBAND perpendicular distance from the person's
+# heading line, the side estimate is dominated by noise (robot near
+# the centreline / near-head-on approach), so the last committed side
+# is held rather than recomputed — recomputing every cycle here is
+# exactly the kind of frame-to-frame flip that produces hesitation.
+LATERAL_SIDE_DEADBAND = 0.15      # m
+
+# ---------------------------------------------------------------------
+# THESIS NOTE (dynamic pass side disabled pending a hysteresis fix)
+#
+# False = the fixed "person's right" bias of conditions A-E. The dynamic
+# version is left in place rather than deleted: its premise is sound - a
+# fixed keep-right only resolves the symmetry when the robot is already
+# on that side, and pushes it INTO the person otherwise.
+#
+# What failed is the hysteresis, not the idea. callback() rebuilds each
+# track dict on every incoming message and carries forward heading_sin,
+# heading_cos and history from the previous entry - but NOT
+# lateral_side. The committed side was therefore erased every cycle, and
+# the deadband that exists to stop frame-to-frame flips never held
+# anything.
+#
+# Observed: the ellipse appearing centred in RViz - it alternates
+# +-0.40 m fast enough to average out - and the controller hesitating
+# left/right, which is exactly the failure the fixed bias was introduced
+# to remove.
+#
+# Re-enable after carrying lateral_side forward in callback() and
+# confirming on a head-on run that the side changes at most once or
+# twice per encounter.
+# ---------------------------------------------------------------------
+ENABLE_DYNAMIC_PASS_SIDE = False
 
 # Person footprint marked at the current position, and the fallback disk
 # used when the ellipse is suppressed. Same radius, different sampling:
 # the current-position disk is denser because it is what the local
 # planner collides against.
-PERSON_DISK_RADIUS = 0.55    # m
+PERSON_DISK_RADIUS = 0.40    # m
 PERSON_DISK_SPACING = 0.10         # m
 FALLBACK_DISK_SPACING = 0.15       # m
 ELLIPSE_SPACING = 0.15             # m
@@ -82,6 +130,7 @@ ROBOT_KEEPOUT_RADIUS = 0.20       # m
 TRACK_TIMEOUT = 0.30               # s before a silent track is dropped
 PUBLISH_RATE_HZ = 10.0             # cloud rate, decoupled from detection
 HEADING_SMOOTH_ALPHA = 0.40        # EMA on the heading sin/cos
+HEADING_MIN_DISPLACEMENT = 0.15    # m; below this, hold the last heading
 HISTORY_LENGTH = 60                # positions retained per track
 
 # Trail clearing. Derived from the lane geometry so it stays correct if
@@ -91,6 +140,66 @@ TRAIL_CLEAR_MARGIN = 0.20          # m
 TRAIL_LAG_MARGIN = 0.20            # m
 
 PERSON_DISK_FORWARD = 0   # m，圆盘沿行进方向的前移量
+
+# ---------------------------------------------------------------------
+# THESIS FIX (duplicate tracks for one person)
+#
+# This node keys active_tracks by track_id and marks every one of them.
+# That is correct only while ids are stable. Measured with four static
+# pedestrians in queue_test: ByteTrack reassigned ids continuously (1 ->
+# 75 over one run) and TRACK_TIMEOUT (0.30 s) is longer than the churn
+# interval, so a person's old and new ids coexisted. Peak: 10 active
+# tracks for 4 real people, cloud size swinging 142 <-> 1420 points every
+# cycle. The cost field was both ~2.5x too large and reshaping
+# constantly - enough to make the local planner spin in place with this
+# layer alone.
+#
+# Two ids at the same coordinates are the same person, whatever
+# ByteTrack believes. Tracks closer than this are merged, keeping the
+# most recently seen. Well under the 1.2 m queue spacing, so genuinely
+# distinct people are never collapsed.
+# ---------------------------------------------------------------------
+DUPLICATE_TRACK_RADIUS = 0.45      # m
+
+# ---------------------------------------------------------------------
+# THESIS ADDITION (layer responsibility split)
+#
+# A person recognised as part of a social group is marked by
+# social_group_cloud_node, not here. Marking them in both layers means
+# the cost field around them is the sum of two independently designed
+# shapes - which is nobody's design.
+#
+# Measured in the queue scenario (4 static pedestrians, n=2 vs n=3):
+#   group layer only : min_dist 1.129, mean_spd 0.26, commit_dist 4.4 m
+#   both layers      : min_dist 1.126, mean_spd 0.21, commit_dist 4.0 m
+# i.e. 17% slower, 25% longer, reacting 0.4 m later, for no change in
+# clearance. Consistent with the cost-gradient flattening already
+# observed across several geometric interventions.
+#
+# There is also a mechanism reason, not just a tuning one. This layer
+# marks TRACKED individuals, so its coverage follows camera visibility:
+# when the robot turns away mid-manoeuvre the track times out and the
+# cost region vanishes, reappearing under a new id. For a queue member
+# who is intermittently visible but never actually moves, that produces
+# a region flickering with the robot's own heading. The group layer's
+# position-anchored hold does not have this property - it marks occupied
+# SPACE rather than a tracked individual. Running this layer alone on
+# the queue left the local planner spinning in place with no stable
+# solution.
+#
+# So the split is not a per-scenario switch. Both layers stay enabled
+# everywhere; whichever has the better-founded claim on a given person
+# takes them. A pedestrian in no group keeps their directional ellipse
+# here; a bystander next to a group is unaffected.
+#
+# Matched by POSITION rather than by the member_ids in the message:
+# those are detector track_ids, and id churn is exactly what this
+# pipeline cannot rely on. Radius is generous relative to the
+# camera-lidar offsets seen (0.04-0.11 m) and well under person spacing.
+# ---------------------------------------------------------------------
+GROUP_MEMBER_TOPIC = "/social_groups"
+GROUP_MEMBER_RADIUS = 0.50         # m; track within this of a member = that member
+GROUP_MEMBER_TIMEOUT = 2.0         # s; stop suppressing if group detection dies
 
 class PredictedPersonCloudNode(Node):
     def __init__(self):
@@ -159,6 +268,14 @@ class PredictedPersonCloudNode(Node):
         # longer than TRACK_TIMEOUT are pruned, so a person who leaves
         # the camera FOV does not leave a phantom obstacle behind.
         # ==========================================================
+        # Positions of people currently claimed by the group layer.
+        # (x, y, last_seen). Cleared by age, so a group detector failure
+        # returns those people to this layer rather than leaving them
+        # unmarked by anything.
+        self.group_member_xy = []
+        self.create_subscription(
+            String, GROUP_MEMBER_TOPIC, self.group_callback, 10)
+
         self.active_tracks = {}
         self.last_robot_xy = None
 
@@ -246,7 +363,72 @@ class PredictedPersonCloudNode(Node):
             "heading_sin": s,
             "heading_cos": c,
             "history": new_hist,
+            # Carried forward like the heading: this dict is REBUILT on
+            # every incoming message, so a committed pass side written
+            # by _robot_lateral_side was erased on the next one. The
+            # hysteresis that exists to stop frame-to-frame side flips
+            # therefore never held anything, and the side reverted to
+            # the +1 default every cycle.
+            "lateral_side": (existing.get("lateral_side", 1)
+                             if existing is not None else 1),
         }
+
+    def group_callback(self, msg):
+        """Cache member coordinates from /social_groups field 9.
+
+        Field 9 is "x;y|x;y|..." in member_ids order. Absent on older
+        publishers, in which case nothing is suppressed - failing open is
+        correct here, since the alternative is a person marked by neither
+        layer.
+        """
+        parts = msg.data.split(",")
+        if len(parts) < 10 or not parts[9].strip():
+            return
+
+        # ==========================================================
+        # THESIS FIX (deferral is type-dependent)
+        #
+        # Only QUEUE members are deferred. The two group types make
+        # different claims on the space they occupy:
+        #
+        #   queue - social_group_cloud_node fills the gap between EVERY
+        #     consecutive pair, so the chain of gaps plus inflation
+        #     covers the whole line. Marking the bodies as well is the
+        #     double-marking that made the outcome non-reproducible
+        #     (min_dist 0.920 +/- 0.356 over three runs).
+        #
+        #   conversation - it fills ONLY the o-space between the pair,
+        #     by explicit design: walking through the middle of a
+        #     conversation is the socially disruptive act, while passing
+        #     behind either person is not, and filling the bodies too
+        #     would wall off a corridor. That design assumes the bodies
+        #     are marked HERE. Deferring them leaves a conversing pair
+        #     represented by a ~0.5 x 0.7 m patch of gap and nothing
+        #     else - observed as a global plan that did not reroute at
+        #     all, because there was almost nothing to route around.
+        #
+        # So the rule is not "the group layer owns its members". It is
+        # "whoever covers that person's body owns them", which is the
+        # group layer for a queue and this node for a conversation.
+        # ==========================================================
+        if parts[1].strip() != "queue":
+            return
+
+        now = self.get_ros_time_seconds()
+        try:
+            for pair in parts[9].strip().split("|"):
+                x, y = (float(v) for v in pair.split(";"))
+                self.group_member_xy.append((x, y, now))
+        except ValueError:
+            return
+
+    def _is_group_member(self, x, y, now):
+        for mx, my, seen in self.group_member_xy:
+            if now - seen > GROUP_MEMBER_TIMEOUT:
+                continue
+            if math.hypot(x - mx, y - my) <= GROUP_MEMBER_RADIUS:
+                return True
+        return False
 
     def _smooth_heading(self, existing, dx, dy):
         """EMA the heading as sin/cos, returning the smoothed pair.
@@ -260,7 +442,29 @@ class PredictedPersonCloudNode(Node):
         a noisy depth reading moved the predicted point, or ego-motion
         from robot rotation leaked into the KF velocity.
         """
-        if math.hypot(dx, dy) > 0.01:
+        # ==========================================================
+        # THESIS FIX (heading gate sized against noise, not zero)
+        #
+        # (dx, dy) is predicted - current. At the 1.2 m/s test walking
+        # speed that displacement is on the order of a metre; for a
+        # person standing still it is KF noise of a few centimetres. The
+        # old 0.01 m gate let the noise through, so the heading of a
+        # stationary person rotated continuously - and since the
+        # fallback disk is offset by LATERAL_BIAS along that heading,
+        # the disk swung around a 0.4 m circle every cycle. Four static
+        # pedestrians produced four cost regions in constant motion.
+        #
+        # 0.15 m is an order of magnitude above the observed noise and
+        # an order of magnitude below a walking person's displacement,
+        # so this changes nothing for a moving pedestrian - including on
+        # the rotation-gated path, which is where head-on avoidance
+        # depends on the heading being right.
+        #
+        # Below the gate the previous heading is held (see below), so a
+        # person who stops keeps the direction they were last walking,
+        # which is the correct guess rather than an arbitrary one.
+        # ==========================================================
+        if math.hypot(dx, dy) > HEADING_MIN_DISPLACEMENT:
             raw = math.atan2(dy, dx)
             raw_sin, raw_cos = math.sin(raw), math.cos(raw)
             if existing is not None and "heading_sin" in existing:
@@ -347,12 +551,48 @@ class PredictedPersonCloudNode(Node):
             z=0.3)
 
         if use_ellipse:
-            points.extend(self._ellipse_points(current_x, current_y, heading, speed))
+            points.extend(self._ellipse_points(current_x, current_y, heading, speed, track))
         else:
-            points.extend(self._fallback_disk_points(predicted_x, predicted_y, heading))
+            points.extend(self._fallback_disk_points(predicted_x, predicted_y, heading, track))
         return points
 
-    def _ellipse_points(self, current_x, current_y, heading, speed):
+    def _robot_lateral_side(self, current_x, current_y, heading, track):
+        """Return +1 or -1: which side of the person's heading line the
+        robot is currently on, with hysteresis.
+
+        THESIS MODIFICATION — see LATERAL_SIDE_DEADBAND comment above
+        LATERAL_BIAS for why this holds the last decision near the
+        centreline instead of recomputing every cycle.
+
+        Falls back to +1 (the old fixed "person's right" side) if no
+        robot pose has been observed yet, so behaviour degrades to the
+        original fixed-bias scheme rather than failing outright.
+        """
+        if not ENABLE_DYNAMIC_PASS_SIDE:
+            return 1
+        if self.last_robot_xy is None:
+            return track.get("lateral_side", 1)
+
+        rx, ry = self.last_robot_xy
+        # (perp_x, perp_y) is heading rotated -90 deg — the person's
+        # right-hand side, same convention as the bias itself below.
+        perp_x = math.sin(heading)
+        perp_y = -math.cos(heading)
+
+        rvx = rx - current_x
+        rvy = ry - current_y
+        perp_dist = rvx * perp_x + rvy * perp_y
+
+        if abs(perp_dist) < LATERAL_SIDE_DEADBAND:
+            # Too close to the centreline to trust — hold the last
+            # committed side (default to +1 if none decided yet).
+            return track.get("lateral_side", 1)
+
+        side = 1 if perp_dist > 0 else -1
+        track["lateral_side"] = side
+        return side
+
+    def _ellipse_points(self, current_x, current_y, heading, speed, track):
         a = min(ELLIPSE_A_MAX, ELLIPSE_A_BASE + speed * ELLIPSE_A_SLOPE)
 
         # Shift forward by a along the heading so the ellipse's BACK edge
@@ -380,21 +620,35 @@ class PredictedPersonCloudNode(Node):
         # bias below, so the choice of side does not flip depending on
         # which branch runs this cycle.
         # ==========================================================
-        cx += LATERAL_BIAS * math.sin(heading)
-        cy += LATERAL_BIAS * -math.cos(heading)
+        # ==========================================================
+        # THESIS MODIFICATION (dynamic pass-side — see LATERAL_BIAS /
+        # LATERAL_SIDE_DEADBAND comments above for the full rationale
+        # and the deadband/hysteresis this depends on)
+        #
+        # Was: always shift toward the person's right (fixed +1).
+        # Now: shift toward whichever side the robot currently
+        # occupies, so the ellipse pushes into the robot's own lane
+        # and forces it toward the empty opposite lane — this works
+        # regardless of which side the robot starts on, instead of
+        # only working when it happens to start on the person's right.
+        # ==========================================================
+        side = self._robot_lateral_side(current_x, current_y, heading, track)
+        cx += side * LATERAL_BIAS * math.sin(heading)
+        cy += side * LATERAL_BIAS * -math.cos(heading)
 
         return self.make_ellipse_points(
             cx, cy, heading=heading, a=a, b=ELLIPSE_B,
             spacing=ELLIPSE_SPACING, z=0.3)
 
-    def _fallback_disk_points(self, predicted_x, predicted_y, heading):
+    def _fallback_disk_points(self, predicted_x, predicted_y, heading, track):
         cx, cy = predicted_x, predicted_y
         if heading is not None:
             # Same side as the ellipse. Zeroing the heading while
             # rotation-gated made the pass-side bias vanish at exactly
             # the moment it mattered most - swerve onset.
-            cx += LATERAL_BIAS * math.sin(heading)
-            cy += LATERAL_BIAS * -math.cos(heading)
+            side = self._robot_lateral_side(cx, cy, heading, track)
+            cx += side * LATERAL_BIAS * math.sin(heading)
+            cy += side * LATERAL_BIAS * -math.cos(heading)
         return self.make_disk_points(
             cx, cy,
             radius=PERSON_DISK_RADIUS,
@@ -454,10 +708,21 @@ class PredictedPersonCloudNode(Node):
         now = self.get_ros_time_seconds()
         self._prune_stale_tracks(now)
 
+        self.group_member_xy = [m for m in self.group_member_xy
+                                if now - m[2] <= GROUP_MEMBER_TIMEOUT]
+
         points = []
-        for track in self.active_tracks.values():
+        suppressed = 0
+        for track in self._deduplicated_tracks():
+            cx, cy = track["current"]
+            if self._is_group_member(cx, cy, now):
+                suppressed += 1
+                continue
             self._clear_trail(track)
             points.extend(self._track_points(track))
+        if suppressed:
+            self.get_logger().info(
+                f"Deferred {suppressed} track(s) to the group layer")
 
         points = self._apply_robot_keepout(points)
         self.pub.publish(self.create_cloud(points, self.frame_id))
@@ -472,6 +737,28 @@ class PredictedPersonCloudNode(Node):
             self.get_logger().info(
                 f"Published cloud for {len(self.active_tracks)} track(s) "
                 f"[{ids}] points={len(points)}{gated_str}")
+
+    def _deduplicated_tracks(self):
+        """Collapse tracks that sit on top of each other into one.
+
+        See DUPLICATE_TRACK_RADIUS. Freshest track wins, so the surviving
+        entry carries the most recent heading and speed estimate rather
+        than a stale one from an id that is about to be pruned.
+        """
+        ordered = sorted(self.active_tracks.values(),
+                         key=lambda t: t["last_seen"], reverse=True)
+        kept = []
+        for t in ordered:
+            x, y = t["current"]
+            if any(math.hypot(x - k["current"][0], y - k["current"][1])
+                   < DUPLICATE_TRACK_RADIUS for k in kept):
+                continue
+            kept.append(t)
+        if len(kept) < len(ordered):
+            self.get_logger().info(
+                f"Merged {len(ordered) - len(kept)} duplicate track(s) "
+                f"-> {len(kept)} distinct person(s)")
+        return kept
 
     def destroy_node(self):
         self.pub.publish(self.create_cloud([], self.frame_id))

@@ -31,6 +31,7 @@ setup(
             'human_kf_predictor = social_perception.human_kf_predictor:main',
             'prediction_marker_node = social_perception.prediction_marker_node:main',
             'group_formation_detector = social_perception.group_formation_detector:main',
+            'corridor_yield_node = social_perception.corridor_yield_node:main',
         ],
     },
 )

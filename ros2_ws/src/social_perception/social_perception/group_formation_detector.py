@@ -305,9 +305,24 @@ class GroupFormationDetector(Node):
         # Index [0] must remain the "conversation" answer -
         # classify_facing returns best_idx == 0.
         # ==========================================================
+        # THESIS FIX (prompt pair restored to the validated form)
+        # ["conversation", "queue"] is not a minimal-contrast pair: two
+        # unrelated nouns of different length and specificity, which is
+        # exactly the structural bias already measured with the earlier
+        # 3-way set. Observed in the queue scenario, it returned "queue"
+        # at 0.80-0.94 on every call regardless of content - harmless
+        # there (index 0 is the conversation answer, so a false
+        # conversation group was correctly suppressed) but it also makes
+        # conversation confirmation impossible, since confirmation
+        # requires best_idx == 0.
+        #
+        # Back to the negation-only pair, verified on both a real photo
+        # (0.587) and the synthetic crop (0.564).
+        #
+        # Index 0 must remain the conversation answer.
         self.clip_prompts = [
-            "conversation",
-            "queue",
+            "two people facing each other",
+            "two people not facing each other",
         ]
         self.clip_text_tokens = self.clip_tokenizer(self.clip_prompts)
         with torch.no_grad():
