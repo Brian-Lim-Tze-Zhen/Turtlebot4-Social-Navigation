@@ -1,0 +1,166 @@
+<?xml version='1.0' encoding='ASCII'?>
+<sdf version='1.7'>
+  <world name='corridor_headon'>
+    <physics type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin name="gz::sim::systems::Physics" filename="gz-sim-physics-system" />
+    <plugin name="gz::sim::systems::UserCommands" filename="gz-sim-user-commands-system" />
+    <plugin name="gz::sim::systems::SceneBroadcaster" filename="gz-sim-scene-broadcaster-system" />
+    <plugin name="gz::sim::systems::Contact" filename="gz-sim-contact-system" />
+
+    <light type="directional" name="sun">
+      <cast_shadows>0</cast_shadows>
+      <pose>-5 -3 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>1 1 1 1</specular>
+      <direction>0 0 -1</direction>
+    </light>
+
+    <scene>
+      <ambient>0.8 0.8 0.8 1</ambient>
+      <background>0.9 0.9 0.9 1</background>
+    </scene>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <pose>0 0 -0.05 0 0 0</pose>
+          <geometry><box><size>30 30 0.1</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <pose>0 0 -0.05 0 0 0</pose>
+          <geometry><box><size>30 30 0.1</size></box></geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Person starts at far end, walks toward robot (managed by move_person_gazebo2) -->
+    <model name="person_1">
+      <static>true</static>
+      <pose>9.0 0.6 0 0 0 3.14159</pose>
+      <link name="body">
+        <!-- THESIS FIX (sim/real detection mismatch): was a single 0.5m
+             diameter cylinder for the whole body, which lidar_person_detector's
+             leg-pair width filter (min_cluster_width=0.05, max_cluster_width=0.45)
+             almost always rejects - a real torso is far wider than a real
+             leg pair. Real hardware bags show the detector reliably picking
+             up actual human legs at range; the sim person never presented
+             that shape to the LIDAR. Two thin leg cylinders (radius 0.06m,
+             0.18m apart) give a combined span of ~0.30m at LIDAR height,
+             inside the filter's real-leg envelope, matching what the
+             detector was actually tuned against. -->
+        <collision name="leg_left">
+          <pose>0 0.09 0.45 0 0 0</pose>
+          <geometry>
+            <cylinder><radius>0.06</radius><length>0.9</length></cylinder>
+          </geometry>
+        </collision>
+        <collision name="leg_right">
+          <pose>0 -0.09 0.45 0 0 0</pose>
+          <geometry>
+            <cylinder><radius>0.06</radius><length>0.9</length></cylinder>
+          </geometry>
+        </collision>
+        <collision name="torso">
+          <pose>0 0 1.25 0 0 0</pose>
+          <geometry>
+            <cylinder><radius>0.20</radius><length>0.9</length></cylinder>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <mesh><uri>model://person_standing/meshes/standing.dae</uri></mesh>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ============================================================
+         Corridor walls: 2 m wide (y = +1.0 / -1.0), ~15 m long.
+         Robot enters from x = -3 side, person from x = 9 side.
+         Wall centres at x = 3.0 with length 15 m spans x=-4.5..10.5.
+         ============================================================ -->
+
+    <!-- North corridor wall: centre at y=+1.05 so inner face is at y=+1.0,
+         giving exactly 2.0 m clear between inner faces. -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>3.0 1.30 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>15.0 0.1 2.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>15.0 0.1 2.0</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- South corridor wall: centre at y=-1.05 so inner face is at y=-1.0. -->
+    <model name="wall_south">
+      <static>true</static>
+      <pose>3.0 -1.30 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>15.0 0.1 2.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>15.0 0.1 2.0</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- West end wall (robot side) -->
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-4.5 0 1.0 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2.7 0.1 2.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>2.7 0.1 2.0</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- East end wall (person side) -->
+    <model name="wall_east">
+      <static>true</static>
+      <pose>10.5 0 1.0 0 0 1.5708</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2.7 0.1 2.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>2.7 0.1 2.0</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
