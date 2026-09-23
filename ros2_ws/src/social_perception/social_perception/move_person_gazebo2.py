@@ -16,7 +16,7 @@ class PersonMover:
     knows how to step itself toward its current target waypoint.
     """
 
-    def __init__(self, model_name, point_a, point_b, speed=0.2):
+    def __init__(self, model_name, point_a, point_b, speed=1.2):
         self.model_name = model_name
         self.point_a = point_a
         self.point_b = point_b
@@ -61,7 +61,8 @@ class MovePeopleGazebo(Node):
     def __init__(self):
         super().__init__("move_people_gazebo")
 
-        self.world_name = "two_human"
+        self.declare_parameter("world_name", "corridor_headon")
+        self.world_name = self.get_parameter("world_name").value
         self.update_dt = 1.0  # seconds; raised back up from 0.2s.
                                # Each tick spawns a new "gz service"
                                # subprocess per person (connection
@@ -78,13 +79,16 @@ class MovePeopleGazebo(Node):
         # person_1: starts (3, -2). Moves along the y-axis at
         # fixed x=3, bouncing between y=-2 and y=2.
         # ==================================================
-        # person_2: starts (6, 2). Moves along the y-axis at
-        # fixed x=6, bouncing between y=2 and y=-2 (opposite
-        # phase to person_1).
+        # corridor_headon scenario: one person walks from the
+        # far end (x=9) toward the robot start (x=-3) along
+        # the corridor centreline (y=0), then bounces back.
+        # Robot navigates the opposite direction (set goal in
+        # RViz at x=9, y=0) — true head-on conflict.
         # ==================================================
+        # Both person and robot travel along y=+0.6 (near north wall).
+        # Robot can only detour south (y<0) to pass — one clear side.
         self.people = [
-            PersonMover("person_1", point_a=(2.0, -1, 0.0), point_b=(7.0, -1, 0.0)),
-            PersonMover("person_2", point_a=(2.0, 1, 0.0), point_b=(7.0, 1, 0.0)),
+            PersonMover("person_1", point_a=(9.0, 0.6, 0.0), point_b=(-3.0, 0.6, 0.0)),
         ]
 
         self.last_time = self.get_clock().now()

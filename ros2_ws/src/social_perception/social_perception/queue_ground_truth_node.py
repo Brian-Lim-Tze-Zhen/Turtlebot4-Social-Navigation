@@ -67,6 +67,7 @@ import subprocess
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 
 from geometry_msgs.msg import PoseArray, Pose
 
@@ -87,6 +88,37 @@ class QueueGroundTruthNode(Node):
         self.declare_parameter("model_names", DEFAULT_MODELS)
         self.declare_parameter("publish_rate_hz", 10.0)
         self.declare_parameter("query_timeout_s", 5.0)
+
+        # ==========================================================
+        # THESIS ADDITION (dynamic models in the combined world)
+        #
+        # A single startup query is correct ONLY for static models. The
+        # combined world also contains person_mover, walking at 1.2 m/s,
+        # for which a cached pose is worse than no ground truth at all -
+        # it reports a person standing where they no longer are, and
+        # every proximity metric silently inherits that error.
+        #
+        # Models named here are re-queried on a timer. Kept separate
+        # from model_names rather than re-querying everything, because
+        # `gz model -p` is a blocking service call of tens of
+        # milliseconds; polling six models at 10 Hz would not keep up,
+        # and the static ones genuinely do not need it.
+        #
+        # 2 Hz bounds the position error to ~0.6 m at walking pace,
+        # which is coarse. If a metric needs better than that on a
+        # moving pedestrian, the mover should publish its own commanded
+        # pose instead - it knows the position exactly and this node is
+        # only inferring it.
+        # ==========================================================
+        # Declared with an explicit descriptor: an empty list default
+        # gives rclpy nothing to infer an element type from, so it
+        # assumes BYTE_ARRAY and then rejects the STRING_ARRAY override
+        # at launch. Same class of strict-typing failure as writing
+        # `cost_weight: 10` instead of `10.0` in a Nav2 params file.
+        self.declare_parameter(
+            "dynamic_model_names", [""],
+            ParameterDescriptor(type=ParameterType.PARAMETER_STRING_ARRAY))
+        self.declare_parameter("dynamic_query_rate_hz", 2.0)
 
         self.world_name = self.get_parameter("world_name").value
         self.model_names = list(self.get_parameter("model_names").value)
@@ -116,10 +148,36 @@ class QueueGroundTruthNode(Node):
             self.get_logger().info(
                 f"  {name}: x={pose.position.x:.3f} y={pose.position.y:.3f}")
 
+        # Re-query the movers, if any, on their own slower timer.
+        self.dynamic_names = [m for m in self.get_parameter(
+            "dynamic_model_names").value if m]
+        self.dynamic_idx = {name: i for i, name in enumerate(self.model_names)
+                            if name in self.dynamic_names}
+        missing = set(self.dynamic_names) - set(self.dynamic_idx)
+        if missing:
+            self.get_logger().error(
+                f"dynamic_model_names not present in model_names: "
+                f"{sorted(missing)} - those models will NOT be updated")
+        if self.dynamic_idx:
+            dyn_rate = float(self.get_parameter("dynamic_query_rate_hz").value)
+            self.create_timer(1.0 / dyn_rate, self.refresh_dynamic)
+            self.get_logger().info(
+                f"Re-querying {sorted(self.dynamic_idx)} at {dyn_rate:.1f} Hz")
+
         self.create_timer(1.0 / rate, self.publish_ground_truth)
         self.get_logger().info(
             f"Publishing /person_ground_truth at {rate:.1f} Hz "
             f"({len(self.poses)} static models, frame '{self.frame_id}')")
+
+    def refresh_dynamic(self):
+        """Re-read the moving models. A failed query keeps the previous
+        pose rather than blanking it: a brief gz hiccup should not empty
+        the array and change its length, since consumers index into it
+        by position."""
+        for name, idx in self.dynamic_idx.items():
+            pose = self.query_model_pose(name)
+            if pose is not None:
+                self.poses[idx] = pose
 
     def query_model_pose(self, model_name):
         """Read one model's pose from the running Gazebo instance.

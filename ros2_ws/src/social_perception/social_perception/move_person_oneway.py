@@ -33,8 +33,58 @@ class MovePersonOneWay(Node):
     def __init__(self):
         super().__init__("move_person_oneway")
 
-        self.world_name = "empty_human"
-        self.model_name = "person_1"
+        # ==========================================================
+        # THESIS CHANGE (parameterised for the combined world)
+        #
+        # World, model and endpoints were hardcoded for empty_human.
+        # The combined world uses a different world name, a different
+        # model name (person_mover) and a corridor running along +y
+        # rather than +x, so a hardcoded mover fails SILENTLY there:
+        # the set_pose service name does not exist, every call is
+        # skipped, and the person simply never moves while the node
+        # logs normally.
+        #
+        # Parameterised rather than forked so both scenarios keep using
+        # the mover that conditions A-E were recorded with - including
+        # the first-tick guard and the one-way traverse, both of which
+        # exist because their absence invalidated earlier trials.
+        #
+        # combined_scenario invocation:
+        #   -p world_name:=combined_scenario
+        #   -p model_name:=person_mover
+        #   -p point_a:="[2.0, 8.0]"  -p point_b:="[2.0, -2.0]"
+        # ==========================================================
+        self.declare_parameter("world_name", "corridor_headon")
+        self.declare_parameter("model_name", "person_1")
+        self.declare_parameter("point_a", [8.0, 0.0])
+        self.declare_parameter("point_b", [-3.0, 0.0])
+        self.declare_parameter("speed", 1.2)
+
+        # In a world where queue_ground_truth_node is also publishing,
+        # this must be off. Two publishers on /person_ground_truth send
+        # PoseArrays of DIFFERENT LENGTHS - one pose here, N there - and
+        # analyse_avoidance.py indexes people by position in the array,
+        # so the two interleave and every person's identity shifts
+        # between messages. Nothing errors; the metrics are simply wrong.
+        self.declare_parameter("publish_ground_truth", True)
+
+        # Yaw offset between the mesh's own forward axis and the
+        # direction of travel. The +pi/2 baked in below was measured in
+        # empty_human, where the pedestrian walks along -x. In a world
+        # where the corridor runs along y the same constant is 90 deg
+        # out and the mesh walks sideways, facing a wall.
+        #
+        # Not cosmetic: person_standing is raycast against the VISUAL
+        # mesh (two legs), not the SDF collision cylinder, so
+        # leg_detector's cluster count is bearing-dependent - one
+        # cluster below ~25 deg, two above ~40 deg. A pedestrian
+        # rotated 90 deg presents a different leg profile than the one
+        # the clustering thresholds were set against, and the VLM
+        # facing classification sees a different silhouette entirely.
+        self.declare_parameter("mesh_yaw_offset", math.pi / 2.0)
+
+        self.world_name = self.get_parameter("world_name").value
+        self.model_name = self.get_parameter("model_name").value
 
         self.gz_client = self.create_client(
             SetEntityPose, f"/world/{self.world_name}/set_pose"
@@ -51,19 +101,28 @@ class MovePersonOneWay(Node):
         # clear of wall_3 at x=-4.5, and far enough past the robot's
         # start that the encounter happens mid-stride rather than during
         # the person's deceleration.
-        self.point_a = (8.0, 0.0, 0.0)
-        self.point_b = (-3.0, 0.0, 0.0)
+        pa = self.get_parameter("point_a").value
+        pb = self.get_parameter("point_b").value
+        self.point_a = (float(pa[0]), float(pa[1]), 0.0)
+        self.point_b = (float(pb[0]), float(pb[1]), 0.0)
 
-        self.speed = 1.2       # m/s
+        self.speed = float(self.get_parameter("speed").value)
         self.update_dt = 0.2   # s
 
         self.current_x, self.current_y, self.current_z = self.point_a
         self.target = self.point_b
         self.finished = False
 
+        self.publish_gt = self.get_parameter("publish_ground_truth").value
+        self.mesh_yaw_offset = float(
+            self.get_parameter("mesh_yaw_offset").value)
         self.ground_truth_pub = self.create_publisher(
             PoseArray, "/person_ground_truth", 10
         )
+        if not self.publish_gt:
+            self.get_logger().info(
+                "publish_ground_truth=false - another node owns "
+                "/person_ground_truth in this world")
         self.frame_id = "map"
 
         self.last_time = self.get_clock().now()
@@ -119,13 +178,15 @@ class MovePersonOneWay(Node):
         )
 
         # +pi/2 offset so the mesh faces its direction of travel.
-        yaw = math.atan2(uy, ux) + math.pi / 2.0
+        yaw = math.atan2(uy, ux) + self.mesh_yaw_offset
         yaw = math.atan2(math.sin(yaw), math.cos(yaw))
 
         self.set_model_pose(self.current_x, self.current_y, self.current_z, yaw)
         self.publish_ground_truth()
 
     def publish_ground_truth(self):
+        if not self.publish_gt:
+            return
         msg = PoseArray()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id

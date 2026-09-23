@@ -17,10 +17,18 @@ class MovePersonCombined(Node):
         self.model_name = "person_mover"
 
         # Movement endpoints in Gazebo world frame
-        self.point_a = (2.0, 1.0, 0.0)
-        self.point_b = (2.0, 7.0, 0.0)
+        # THESIS CHANGE (comparability with the head-on ablation).
+        # Was (2,1)<->(2,7) as a round trip: only 6 m between endpoints
+        # against the 10 m initial gap the A-E ablation used, and a
+        # pedestrian who may reverse before the robot arrives, leaving
+        # the encounter geometry uncontrolled. The approach length is
+        # the variable that decides whether this scenario tests
+        # anything - the manoeuvre must begin ~7 m out while MPPI's
+        # rollout reach is ~1.86 m. Now a single 10 m traverse.
+        self.point_a = (2.0, 11.0, 0.0)
+        self.point_b = (2.0, -2.0, 0.0)
 
-        self.speed = 0.2          # m/s
+        self.speed = 1.2         # m/s
         self.update_dt = 0.5      # seconds
 
         # Same endpoint-pause pattern as move_person_gazebo.py — gives
@@ -34,6 +42,13 @@ class MovePersonCombined(Node):
         self.current_z = self.point_a[2]
 
         self.target = self.point_b
+
+        # One-way by default: stop at the far endpoint instead of
+        # reversing. A pedestrian who turns around mid-trial changes the
+        # encounter geometry. Set false for a continuous-flow scenario.
+        self.declare_parameter("one_way", True)
+        self.one_way = self.get_parameter("one_way").value
+        self.finished = False
 
         self.timer = self.create_timer(self.update_dt, self.timer_callback)
         self.last_time = self.get_clock().now()
@@ -74,6 +89,14 @@ class MovePersonCombined(Node):
         dist = math.sqrt(dx * dx + dy * dy)
 
         if dist < 0.05:
+            if self.one_way:
+                if not self.finished:
+                    self.finished = True
+                    self.get_logger().info(
+                        f"Reached {self.target} - one_way, holding position")
+                self.publish_ground_truth()
+                return
+
             self.pause_timer = self.pause_duration
             if self.target == self.point_b:
                 self.target = self.point_a
