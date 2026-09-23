@@ -18,10 +18,7 @@ void SocialCritic::initialize()
 
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(enabled_, "enabled", true);
-  // THESIS DECISION: default matches the 0.8f in social_critic.hpp's
-  // member initializer - see that file for why 0.8 m is the full
-  // intended centre-to-centre clearance, not a component value.
-  getParam(social_distance_, "social_distance", 0.8f);
+  getParam(social_distance_, "social_distance", 0.94f);
   getParam(weight_, "cost_weight", 40.0f);
   getParam(critical_distance_, "critical_distance", 0.35f);
   getParam(collision_cost_, "collision_cost", 10000.0f);

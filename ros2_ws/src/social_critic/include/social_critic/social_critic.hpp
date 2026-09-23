@@ -88,16 +88,10 @@ private:
 
   // --- parameters ---
   // Centre-to-centre distance at which the penalty reaches zero. This is
-  // the knob the whole critic exists for.
-  //
-  // THESIS DECISION: set directly to 0.8 m centre-to-centre per the
-  // project's social-comfort design target, rather than derived from
-  // surface clearance + footprint radius (the previous 0.75 + 0.189 =
-  // 0.94 m). The critic already measures centre-to-centre (robot
-  // trajectory point to person's predicted centre position), so 0.8 m
-  // IS the full intended clearance value, not a component to be added
-  // to something else.
-  float social_distance_{0.8f};
+  // the knob the whole critic exists for: set it to
+  //   desired surface clearance + robot footprint radius
+  // e.g. 0.75 + 0.189 = 0.94 for the TurtleBot4 octagonal footprint.
+  float social_distance_{0.94f};
 
   // Penalty scale. Unlike ObstaclesCritic's repulsion_weight this
   // multiplies a term that is genuinely non-zero at social_distance_,
