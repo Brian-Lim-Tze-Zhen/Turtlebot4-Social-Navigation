@@ -1,13 +1,14 @@
 #!/bin/bash
 # Full Lidar pipeline test in simulation.
-# Launches all six nodes then the person mover, waits for the walk to finish,
-# then kills everything cleanly.
+# Launches the 5 lidar perception nodes. Person mover is optional
+# (skipped when run alongside run_sim.sh which already runs move_person_gazebo2).
 #
 # Prerequisites: run_sim.sh must already be running (Gazebo + Nav2 + RViz up,
 # 2D Pose Estimate set in RViz so /odom and /map TF are connected).
 #
 # Usage:
-#   bash run_lidar_test.sh
+#   bash run_lidar_test.sh          # lidar pipeline only (mover from run_sim.sh)
+#   bash run_lidar_test.sh --mover  # also launch move_person_oneway
 #
 set -e
 
@@ -58,19 +59,23 @@ python3 "$SCRIPT_DIR/predicted_person_cloud_node_lidar.py" \
 PIDS+=($!)
 sleep 2
 
-echo "[lidar_test] Starting person mover..."
-python3 "$WS/src/social_perception/social_perception/move_person_oneway.py" \
-  --ros-args -p use_sim_time:=true &
-MOVER_PID=$!
-PIDS+=($MOVER_PID)
-
 echo "[lidar_test] Pipeline running — Ctrl+C to stop."
 echo "[lidar_test] Watch topics:"
-echo "  /lidar_person_clusters     (lidar detections)"
-echo "  /person_positions_map      (yolo detections)"
-echo "  /person_positions_fused    (fused output)"
+echo "  /lidar_person_clusters      (lidar detections)"
+echo "  /person_positions_map       (yolo detections)"
+echo "  /person_positions_fused     (fused output)"
 echo "  /predicted_person_positions (KF predictions)"
-echo "  /predicted_person_cloud    (costmap input)"
+echo "  /predicted_person_cloud     (costmap input)"
 
-wait $MOVER_PID
-echo "[lidar_test] Person walk complete."
+if [[ "$1" == "--mover" ]]; then
+  echo "[lidar_test] Starting person mover..."
+  python3 "$WS/src/social_perception/social_perception/move_person_oneway.py" \
+    --ros-args -p use_sim_time:=true -p world_name:=corridor_headon &
+  MOVER_PID=$!
+  PIDS+=($MOVER_PID)
+  wait $MOVER_PID
+  echo "[lidar_test] Person walk complete."
+else
+  echo "[lidar_test] Mover not started (run_sim.sh handles it). Ctrl+C to stop."
+  wait
+fi

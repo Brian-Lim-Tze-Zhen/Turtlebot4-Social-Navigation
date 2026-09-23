@@ -2,8 +2,28 @@ lidar_person_detector:
   ros__parameters:
     scan_topic: /scan
     min_points_per_cluster: 3
-    confirm_min_span: 0.5
-    # map filter on; confirmed tracks exempt from streak eviction (patched)
+    # THESIS FIX (wall-edge phantom confirmed as a person): was 0.5,
+    # 3x looser than the code's own default (1.5). A track only needs
+    # to accumulate this much cumulative displacement from birth to
+    # get permanently "confirmed" - measured wall-grazing AMCL-noise
+    # drift along this corridor's north wall reaches ~0.5-0.6m within
+    # ~1.3s, easily clearing 0.5m and getting confirmed as a real
+    # person. Raised back above the code default so a fresh spawn
+    # needs sustained, unambiguous displacement - a wall artifact's
+    # noise-driven drift is bounded by the AMCL error magnitude and
+    # shouldn't reach 2m, while a real walking person covers the
+    # corridor's length easily.
+    # THESIS FIX (2.0 was too strict): raw lidar tracks in this pipeline
+    # are chronically short-lived (id churn re-acquires the person every
+    # ~1-2s), so few tracks ever accumulate 2.0m before being pruned and
+    # restarting from span=0 - confirmed real or not. Observed wall-noise
+    # drift tops out ~0.5-0.9m; identity_fusion's own lidar-only span
+    # logging shows real (if short-lived) tracks reaching 0.7-1.5m. 1.0
+    # sits between the two instead of overshooting past both.
+    confirm_min_span: 1.0
+    # map filter on; confirmed tracks now ALSO evicted after
+    # confirmed_static_streak_limit consecutive static-flagged matches
+    # (see lidar_person_detector.py), not exempt forever.
     static_occupancy_threshold: 50
 
 identity_fusion_node:

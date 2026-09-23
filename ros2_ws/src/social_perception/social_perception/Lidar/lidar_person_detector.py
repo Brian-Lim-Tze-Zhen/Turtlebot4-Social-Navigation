@@ -114,6 +114,15 @@ class LidarPersonDetector(Node):
         # Set <=0 to disable and restore the previous behaviour.
         self.declare_parameter("confirm_min_span", 1.5)
 
+        # THESIS FIX: how many consecutive static-flagged matches a
+        # CONFIRMED track tolerates before eviction (unconfirmed tracks
+        # always use the shorter fixed limit of 3, see the eviction
+        # check below). Set high enough to survive a brief real overlap
+        # (furniture, a turn shifting map-frame coords for a scan or
+        # two) but low enough that a track hijacked by a stationary
+        # wall-edge artifact doesn't ride it forever.
+        self.declare_parameter("confirmed_static_streak_limit", 20)
+
         # Two separate leg clusters within this distance (meters) of each
         # other are merged into one person track — otherwise each leg gets
         # its own ID/velocity, and gait leg-swing shows up as false vy.
@@ -180,6 +189,18 @@ class LidarPersonDetector(Node):
         self.declare_parameter("ray_clear_margin", 0.25)
         self.declare_parameter("ray_max_range", 8.0)
 
+        # Wall-run detection (see _compute_wall_mask docstring): a cell
+        # needs this many contiguous occupied neighbours in a row/column
+        # to count as "wall" rather than compact furniture. At 0.05m/cell
+        # this is 1.0m - long enough that no real furniture piece in this
+        # environment forms a run this long, short enough to catch a
+        # corridor wall immediately.
+        self.declare_parameter("wall_run_min_cells", 20)
+        # Extra rejection margin (in cells) applied ONLY around cells
+        # flagged as wall-run, independent of static_inflation_cells
+        # (which stays 0 to avoid vetoing people near furniture).
+        self.declare_parameter("wall_buffer_cells", 4)
+
         self.scan_topic = self.get_parameter("scan_topic").value
         self.output_topic = self.get_parameter("output_topic").value
         self.target_frame = self.get_parameter("target_frame").value
@@ -193,6 +214,10 @@ class LidarPersonDetector(Node):
         self.static_move_threshold = self.get_parameter("static_move_threshold").value
         self.static_check_window = self.get_parameter("static_check_window").value
         self.confirm_min_span = self.get_parameter("confirm_min_span").value
+        self.confirmed_static_streak_limit = self.get_parameter("confirmed_static_streak_limit").value
+        self.wall_run_min_cells = self.get_parameter("wall_run_min_cells").value
+        self.wall_buffer_cells = self.get_parameter("wall_buffer_cells").value
+        self.wall_mask = None
         self.leg_pair_merge_dist = self.get_parameter("leg_pair_merge_dist").value
         self.map_topic = self.get_parameter("map_topic").value
         self.static_occupancy_threshold = self.get_parameter("static_occupancy_threshold").value
@@ -307,9 +332,112 @@ class LidarPersonDetector(Node):
             msg.info.origin.position.y,
         )
         self.map_grid = msg.data
+        self._compute_wall_mask()
         self.get_logger().info(
             f"Static map received: {msg.info.width}x{msg.info.height} "
             f"@ {msg.info.resolution:.3f} m/cell")
+
+    def _compute_wall_mask(self):
+        """Flag occupied cells that belong to a long, straight run (a
+        wall) as distinct from a compact blob (furniture).
+
+        THESIS FIX (motion-based checks can't separate wall-edge noise
+        from a real person): confirm_min_span/publish gating were tried
+        and failed - AMCL-smoothed localization noise on a wall-grazing
+        LIDAR return produces a drift profile that isn't reliably
+        distinguishable from real short-lived motion by displacement or
+        speed alone (see history above and in sim_params.yaml). This
+        works on the MAP instead, which isn't noisy: any cell with at
+        least `wall_run_min_cells` contiguous occupied neighbours along
+        a single row or column is part of a wall run. A wall's cross-
+        section (0.05-0.45m width filter) still passes clustering same
+        as a real leg-pair - only the SURROUNDING structure tells them
+        apart, since real legs never appear as one endpoint of a 1m+
+        straight occupied line.
+        """
+        width, height, res, _, _ = self.map_data
+        grid = self.map_grid
+        thresh = self.static_occupancy_threshold
+        min_run = self.wall_run_min_cells
+
+        occ = [False] * (width * height)
+        for i, v in enumerate(grid):
+            occ[i] = v >= thresh
+
+        wall = bytearray(width * height)
+
+        # Horizontal runs
+        for r in range(height):
+            base = r * width
+            run_start = 0
+            c = 0
+            while c <= width:
+                if c < width and occ[base + c]:
+                    c += 1
+                    continue
+                if c - run_start >= min_run:
+                    for k in range(run_start, c):
+                        wall[base + k] = 1
+                run_start = c + 1
+                c += 1
+
+        # Vertical runs
+        for c in range(width):
+            run_start = 0
+            r = 0
+            while r <= height:
+                if r < height and occ[r * width + c]:
+                    r += 1
+                    continue
+                if r - run_start >= min_run:
+                    for k in range(run_start, r):
+                        wall[k * width + c] = 1
+                run_start = r + 1
+                r += 1
+
+        self.wall_mask = wall
+
+        # THESIS DEBUG: one-time dump of which world-y rows got flagged,
+        # to directly verify the row<->world-y convention against the
+        # known wall positions instead of reasoning about it blindly.
+        _, _, res, _, origin_y = self.map_data
+        flagged_rows = sorted({i // width for i in range(width * height) if wall[i]})
+        if flagged_rows:
+            # collapse into contiguous ranges for a readable log line
+            ranges = []
+            start = prev = flagged_rows[0]
+            for r in flagged_rows[1:]:
+                if r == prev + 1:
+                    prev = r
+                    continue
+                ranges.append((start, prev))
+                start = prev = r
+            ranges.append((start, prev))
+            desc = ", ".join(
+                f"row {a}-{b} (y={origin_y + a*res:.2f}..{origin_y + b*res:.2f})"
+                for a, b in ranges)
+            self.get_logger().info(f"DEBUG wall_mask flagged rows: {desc}")
+
+    def is_near_wall(self, x, y):
+        """True if (x, y) is within wall_buffer_cells of a map cell
+        flagged as part of a long straight occupied run (see
+        _compute_wall_mask). Independent of is_static_obstacle's exact-
+        cell check (static_inflation_cells=0) so real people standing
+        close to furniture are unaffected - this only tightens the
+        margin specifically around WALLS."""
+        if self.wall_mask is None:
+            return False
+        width, height, res, origin_x, origin_y = self.map_data
+        col = int((x - origin_x) / res)
+        row = int((y - origin_y) / res)
+        k = self.wall_buffer_cells
+        for dr in range(-k, k + 1):
+            for dc in range(-k, k + 1):
+                r, c = row + dr, col + dc
+                if 0 <= r < height and 0 <= c < width:
+                    if self.wall_mask[r * width + c]:
+                        return True
+        return False
 
     def is_static_obstacle(self, x, y):
         """True if (x, y) in map frame lands on/near a known-occupied
@@ -541,12 +669,12 @@ class LidarPersonDetector(Node):
             # So: flag, keep for matching, exclude only from spawning.
             static_idx = {
                 i for i, (x, y) in enumerate(transformed)
-                if self.is_static_by_ray(sx, sy, x, y)
+                if self.is_static_by_ray(sx, sy, x, y) or self.is_near_wall(x, y)
             }
         else:
             static_idx = {
                 i for i, (x, y) in enumerate(transformed)
-                if self.is_static_obstacle(x, y)
+                if self.is_static_obstacle(x, y) or self.is_near_wall(x, y)
             }
         if static_idx:
             self.get_logger().info(
@@ -644,13 +772,31 @@ class LidarPersonDetector(Node):
             # so no track steals another's cluster and gets pushed onto
             # a distant one. MEASURED: teleports 18->3, 19->2, 1->0.
             for i in unmatched:
-                # Only evict unconfirmed tracks from static candidates.
-                # A confirmed track must keep matching even if its cluster
-                # temporarily lands on a mapped-occupied cell (person walking
-                # near furniture, or robot rotation shifting map-frame coords).
+                # Only evict unconfirmed tracks from static candidates
+                # QUICKLY (streak>=3) - a confirmed track must keep
+                # matching through a BRIEF overlap with a mapped-occupied
+                # cell (person walking near furniture, or robot rotation
+                # shifting map-frame coords for a scan or two).
+                #
+                # THESIS FIX (confirmed track hijacked by a wall-edge
+                # phantom): "confirmed" latches permanently and previously
+                # had NO streak limit at all, so if a confirmed track's
+                # nearest-neighbor match ever locked onto a stationary
+                # near-wall artifact (e.g. the real person briefly lost
+                # lidar corroboration while a wall-grazing return sat
+                # within the predicted-position gate), it rode that wall
+                # artifact indefinitely - the very protection meant to
+                # survive a 1-2 scan furniture overlap became a permanent
+                # hijack. Confirmed tracks now get a much longer leash
+                # (confirmed_static_streak_limit, default ~20 scans /
+                # 2-4s) instead of no limit, so a brief legitimate overlap
+                # still survives but a track that's been glued to a wall
+                # for seconds gets dropped and can re-spawn on the real
+                # person elsewhere.
                 if (i in static_idx
-                        and not t.get("confirmed", False)
-                        and t.get("static_streak", 0) >= 3):
+                        and t.get("static_streak", 0) >= (
+                            self.confirmed_static_streak_limit
+                            if t.get("confirmed", False) else 3)):
                     continue
                 d = math.hypot(
                     transformed[i][0] - pred_x, transformed[i][1] - pred_y
@@ -819,9 +965,41 @@ class LidarPersonDetector(Node):
                                     and age <= publish_grace_s):
                 continue
 
+            # THESIS REVERT: tried gating publish on `confirmed` (requiring
+            # confirm_min_span of cumulative displacement) instead of the
+            # weaker `moved < static_move_threshold` (0.1m/0.3s) check.
+            # That closed the wall-phantom leak but also produced ZERO
+            # detections at all - this pipeline's raw lidar track
+            # continuity is fragmented enough (chronic id churn,
+            # documented throughout this file's own history) that even a
+            # genuine person's track rarely survives long enough to
+            # accumulate confirm_min_span before being lost and
+            # restarted. No detection is strictly worse than an
+            # occasional wrong one - restored the original gate. The
+            # wall-phantom problem needs a different fix (geometric:
+            # flag candidates adjacent to a long straight occupied map
+            # run, not motion/span-based, since AMCL-smoothed noise
+            # drift is not reliably distinguishable from real short
+            # tracked motion by displacement alone).
             moved = math.hypot(t["x"] - t["origin_x"], t["y"] - t["origin_y"])
             if not t.get("confirmed", False) and moved < self.static_move_threshold:
                 continue  # never yet proven to move — likely furniture/wall
+
+            # THESIS FIX (short-lived wall phantom published before streak
+            # eviction ever triggers): confirmed_static_streak_limit and
+            # the unconfirmed streak>=3 eviction both require several
+            # CONSECUTIVE static-flagged matches before acting - a track
+            # that dies (times out, unmatched) within 1-2 scans is
+            # published in the meantime regardless, since eviction never
+            # got a chance to fire before it went stale. Verified against
+            # the LIVE map (not just is_static_by_ray's per-scan ray cast,
+            # which can miss depending on the exact ray geometry that
+            # cycle): is_near_wall(1.1, 1.16) correctly returns True for
+            # a phantom that still got published. Check it here,
+            # unconditionally, independent of streak/history, right
+            # before anything goes out on the wire.
+            if self.is_near_wall(t["x"], t["y"]):
+                continue  # sitting on a mapped wall right now — never publish
 
             if matched:
                 px, py = t["x"], t["y"]
