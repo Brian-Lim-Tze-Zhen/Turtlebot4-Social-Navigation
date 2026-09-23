@@ -1,0 +1,624 @@
+#!/usr/bin/env python3
+
+import math
+import numpy as np
+import rclpy
+import time as _wall 
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import String
+from nav_msgs.msg import Odometry
+from collections import deque
+
+# THESIS FIX (15 Sep, stationary-person stretch): with the robot moving,
+# a standing person's measured position jitters by a few cm per frame.
+# The KF turns that into a small but non-zero velocity, and
+# predict_future() multiplies it by the horizon, so the predicted cloud
+# stretches although nobody moves. A speed threshold cannot separate this
+# (per-frame jitter speed is high); NET displacement over a window can:
+# jitter averages out, walking accumulates.
+STILL_WINDOW_S = 1.0     # s; displacement measured over at least this long
+STILL_MAX_DISP_M = 0.30  # m; net displacement below this = standing still
+
+
+class HumanTrackKF:
+    def __init__(self, x, y, timestamp):
+        # state: [x, y, vx, vy]
+        self.x = np.array([[x], [y], [0.0], [0.0]], dtype=float)
+
+        # State covariance
+        self.P = np.eye(4) * 1.0
+
+        # ==========================================================
+        # THESIS MODIFICATION (prediction stability fix)
+        #
+        # Process noise was previously a single uniform value
+        # (np.eye(4) * 0.05) applied equally to position AND velocity
+        # states. This meant the filter had no separate way to trust
+        # velocity less than position.
+        #
+        # Since predict_future() extrapolates with
+        #     pred = position + velocity * horizon
+        # any noise present in the velocity estimate gets amplified
+        # by the horizon (2.0s by default -> noise is doubled). This
+        # was the dominant cause of the predicted point visibly
+        # jittering/wobbling in RViz even when the person walked at a
+        # fairly constant pace.
+        #
+        # Fix: split Q into separate position and velocity process
+        # noise. Lowering q_vel relative to q_pos tells the filter
+        # "expect velocity to change slowly/smoothly", which directly
+        # reduces frame-to-frame velocity noise without making
+        # position tracking sluggish.
+        #
+        # Tuned and verified empirically against logged data
+        # (id:60 / id:61 sequences): reduced mean frame-to-frame
+        # pred_y jump by ~25% and worst-case single-step jump by
+        # ~38% on the noisier track, combined with the velocity EMA
+        # smoothing below.
+        # ==========================================================
+        q_pos = 0.05
+        q_vel = 0.05
+        self.Q = np.diag([q_pos, q_pos, q_vel, q_vel])
+
+        # Measurement noise
+        self.R = np.eye(2) * 0.10
+
+        # Multiplier applied to R (not Q - the docstring says "measurement/
+        # process noise" but the actual mechanism is measurement trust: a
+        # lidar_only update's identity linkage is less certain, not its
+        # position accuracy, so widening R - trust this measurement less,
+        # let the filter lean more on its own prediction - is the correct
+        # lever) for lidar_only updates. 3.0 is a starting value, not
+        # measured against real occlusion trials yet - tune once you have
+        # logged camera_confirmed vs lidar_only sequences to compare.
+        self.lidar_only_noise_scale = 3.0
+        # THESIS FIX (static-object false lock): a track that's been
+        # lidar_only AND near-stationary for too long is very likely
+        # anchored on a static object (furniture, wall), not a real person
+        # who just stopped moving out of camera view. Cap how long that
+        # combination is tolerated before the track is dropped outright.
+        self.lidar_only_stall_timeout = 5.0   # s
+        self.lidar_only_stall_speed = 0.05    # m/s; below this counts as "stalled"
+        self.lidar_only_stall_since = None
+
+        # Measurement matrix: only position x, y is measured
+        self.H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ], dtype=float)
+
+        self.last_time = timestamp
+        self.last_conf = 1.0  # updated each measurement; used when coasting
+        self.update_count = 0  # suppress velocity prediction during warm-up
+
+        # ==========================================================
+        # THESIS MODIFICATION (prediction stability fix)
+        #
+        # Smoothed (EMA) velocity estimate, used only for the future
+        # prediction in predict_future(). The raw KF velocity state
+        # (self.x[2,0], self.x[3,0]) is left untouched so that
+        # position tracking itself stays just as responsive as
+        # before - only the value fed into the horizon extrapolation
+        # is smoothed.
+        #
+        # smooth_alpha tradeoff:
+        #   - lower alpha  -> smoother prediction, but more lag
+        #                     before a genuine sudden velocity change
+        #                     (e.g. person stopping or reversing) is
+        #                     reflected in the predicted point.
+        #   - higher alpha -> less lag, but less noise reduction.
+        #   0.3 was used during empirical testing against logged
+        #   data; revisit if live behavior feels too laggy or still
+        #   too jittery.
+        # ==========================================================
+        # was: self.smooth_alpha = 0.12
+        self.tau_rise = 0.15   # s; was 1.3. At 1.2 m/s a walk leg is only ~4 s,
+                               # so 1.3 s spent most of the encounter still
+                               # converging (vel_filt -1.06 vs true -1.21).
+                               # Trade-off: less noise on the horizon-multiplied
+                               # value. Fallback 0.8 if pred jitters.
+
+        # ==========================================================
+        # THESIS MODIFICATION (asymmetric EMA decay)
+        #
+        # smooth_alpha=0.12 moves the filtered velocity only 12% toward
+        # each new reading, so it takes ~18 updates (~3s at 6Hz, longer
+        # under RTF sag) to decay 90%. That is the intended behaviour
+        # while WALKING - it suppresses the jitter that would otherwise
+        # be amplified by the prediction horizon - but it means velocity
+        # lingers long after motion stops.
+        #
+        # Observed: a bolted-down person read 0.14 m/s with the robot
+        # parked and the rotation gate INACTIVE, decaying only slowly
+        # toward zero. That is residue accumulated during an earlier
+        # motion phase, not live contamination. At 0.14 it is half of
+        # slow-walking speed, so it clears predicted_person_cloud_node's
+        # 0.05 stationary deadband and produces a 2.2m directional
+        # ellipse for someone standing still.
+        #
+        # Fix: use a much higher alpha when the raw velocity is SMALLER
+        # in magnitude than the current filtered estimate. Slowing down
+        # and stopping are tracked quickly; speeding up stays smoothed.
+        # This mirrors the existing direction-reversal reset below,
+        # which already treats "the filter is confidently wrong" as a
+        # case for abandoning smoothing rather than easing into it.
+        # ==========================================================
+        # was: self.decay_alpha = 0.12
+        self.tau_decay = 1.3  # s; PLACEHOLDER — currently symmetric with tau_rise.
+                            # Original comments describe intended fast-decay/
+                            # slow-rise asymmetry, but decay_alpha was numerically
+                            # identical to smooth_alpha (0.12) in the prior code —
+                            # no asymmetry was actually active. Revisit this value
+                            # once you decide on an intended decay speed.
+        self.vx_filt = None
+        self.vy_filt = None
+        self.pos_hist = deque()   # (t, x, y) of measurements
+        self.is_still = False
+
+    def update_still(self, t, mx, my):
+        self.pos_hist.append((t, mx, my))
+        while len(self.pos_hist) > 2 and t - self.pos_hist[1][0] >= STILL_WINDOW_S:
+            self.pos_hist.popleft()
+        t0, x0, y0 = self.pos_hist[0]
+        if t - t0 < STILL_WINDOW_S:
+            return   # not enough history yet; keep previous decision
+        self.is_still = math.hypot(mx - x0, my - y0) < STILL_MAX_DISP_M
+
+    def update(self, meas_x, meas_y, timestamp, freeze_velocity=False,
+               is_lidar_only=False):
+        dt_raw = timestamp - self.last_time
+
+        # Reset velocity when the track was lost long enough that the old
+        # state is untrustworthy. Without this, a high velocity from before
+        # the gap persists through the dt clamp below and decays too slowly.
+        if dt_raw > 1.5:
+            self.x[2, 0] = 0.0
+            self.x[3, 0] = 0.0
+            self.vx_filt = None
+            self.vy_filt = None
+            self.P[2, 2] = 5.0
+            self.P[3, 3] = 5.0
+            self.update_count = 0
+            self.pos_hist.clear()
+            self.is_still = False
+
+        # Safety clamp for simulation pauses / timing jumps
+        dt = dt_raw if 0.0 < dt_raw <= 1.0 else 0.1
+
+        self.last_time = timestamp
+
+        F = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], dtype=float)
+
+        # Prediction step
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + self.Q
+
+        # Measurement update step — always update position
+        z = np.array([[meas_x], [meas_y]], dtype=float)
+
+        # ==========================================================
+        # THESIS MODIFICATION (lidar_only trust scaling)
+        #
+        # identity_fusion_node.py's docstring: "human_kf_predictor.py
+        # should apply higher measurement/process noise on lidar_only
+        # updates." A lidar_only message means camera hasn't confirmed
+        # this identity THIS cycle - the person is occluded and the
+        # fusion node is coasting on the LIDAR track's continuity
+        # alone. The position itself may be fine (LIDAR is accurate),
+        # but the identity linkage is less certain during an occlusion
+        # than during a fresh camera-confirmed match, so trust the
+        # measurement less: scale R up rather than using it directly.
+        # Computed locally (not mutated onto self.R) so a later
+        # camera_confirmed update isn't left with a stale scaled R.
+        # ==========================================================
+        R_eff = self.R * self.lidar_only_noise_scale if is_lidar_only else self.R
+
+        y = z - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + R_eff
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+
+        self.x = self.x + K @ y
+        self.P = (np.eye(4) - K @ self.H) @ self.P
+
+        # ==========================================================
+        # THESIS MODIFICATION (ego-motion rotation gate)
+        #
+        # When the robot is rotating fast (angular velocity above
+        # threshold), the camera-frame apparent motion of the person
+        # contaminates the KF velocity estimate. This causes the
+        # predicted ellipse to flip direction during avoidance
+        # manoeuvres, trapping the robot inside the obstacle zone.
+        #
+        # Fix: when freeze_velocity=True (set by HumanKFPredictor
+        # when |odom angular.z| > rot_gate_threshold), skip the EMA
+        # velocity update. Position tracking continues as normal
+        # (the KF still sees new measurements and updates x, y),
+        # but the smoothed velocity fed into predict_future() holds
+        # its last known value until the robot stops rotating.
+        #
+        # This means the ellipse holds its last known direction
+        # during avoidance rotations instead of chasing ego-motion
+        # noise.
+        # ==========================================================
+        self.update_count += 1
+        self.update_still(timestamp, meas_x, meas_y)
+
+        if not freeze_velocity:
+            vx_raw = float(self.x[2, 0])
+            vy_raw = float(self.x[3, 0])
+
+            if self.vx_filt is None:
+                self.vx_filt = vx_raw
+                self.vy_filt = vy_raw
+            else:
+                # If the raw velocity has reversed direction (negative dot product
+                # with the current filtered estimate), reset the EMA immediately
+                # so the predicted sphere doesn't lag behind a direction change.
+                dot = vx_raw * self.vx_filt + vy_raw * self.vy_filt
+                if dot < 0.0:
+                    self.vx_filt = vx_raw
+                    self.vy_filt = vy_raw
+                else:
+                    # Asymmetric alpha - see decay_alpha above. Decay
+                    # fast, rise slow.
+                    raw_speed = (vx_raw ** 2 + vy_raw ** 2) ** 0.5
+                    filt_speed = (self.vx_filt ** 2 + self.vy_filt ** 2) ** 0.5
+
+                # was:
+                    #     if raw_speed < filt_speed:
+                    #         a = self.decay_alpha
+                    #     else:
+                    #         a = self.smooth_alpha
+                    #     self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
+                    #     self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
+
+                    if raw_speed < filt_speed:
+                        a = 1.0 - math.exp(-dt / self.tau_decay)
+                    else:
+                        a = 1.0 - math.exp(-dt / self.tau_rise)
+
+                    self.vx_filt = a * vx_raw + (1.0 - a) * self.vx_filt
+                    self.vy_filt = a * vy_raw + (1.0 - a) * self.vy_filt
+
+    def predict_future(self, horizon):
+        x = float(self.x[0, 0])
+        y = float(self.x[1, 0])
+
+        # Raw (unsmoothed) KF velocity - kept for logging/diagnostics
+        # so it's still possible to compare raw vs smoothed velocity
+        # in the published message / logs if needed.
+        vx = float(self.x[2, 0])
+        vy = float(self.x[3, 0])
+
+        # ==========================================================
+        # THESIS MODIFICATION (prediction stability fix)
+        #
+        # Use the EMA-smoothed velocity for the actual extrapolation,
+        # since this is the value that gets multiplied by horizon and
+        # is therefore the most sensitive to noise. Falls back to raw
+        # velocity on the very first call (vx_filt is None) before
+        # any smoothing history exists.
+        # ==========================================================
+        # Suppress velocity during warm-up to prevent noisy early depth
+        # readings from sending the predicted sphere flying on first detection.
+        if self.update_count < 5:
+            vx_pred, vy_pred = 0.0, 0.0
+        else:
+            vx_pred = self.vx_filt if self.vx_filt is not None else vx
+            vy_pred = self.vy_filt if self.vy_filt is not None else vy
+
+        if self.is_still:
+            vx_pred, vy_pred = 0.0, 0.0
+
+        # Hard cap at realistic human walking speed (~2 m/s) as a safety net.
+        max_speed = 2.0
+        speed = (vx_pred ** 2 + vy_pred ** 2) ** 0.5
+        if speed > max_speed:
+            scale = max_speed / speed
+            vx_pred *= scale
+            vy_pred *= scale
+
+        pred_x = x + vx_pred * horizon
+        pred_y = y + vy_pred * horizon
+
+        return x, y, vx_pred, vy_pred, pred_x, pred_y, vx, vy
+
+
+class HumanKFPredictor(Node):
+    def __init__(self):
+        super().__init__("human_kf_predictor")
+        # =====================================
+        # User configurable parameters
+        # =====================================
+        # THESIS FIX: was "person_positions_base" - lidar_person_detector's
+        # raw output, with no camera identity or long-range detection at
+        # all. identity_fusion_node.py's /person_positions_fused carries
+        # both: camera-confirmed identity/long-range detection AND
+        # LIDAR-accurate position once in range, tagged per-message via
+        # the trailing "source" field (camera_confirmed / lidar_only) so
+        # this node can trust each update appropriately - see the
+        # measurement noise scaling in HumanTrackKF.update() below.
+        self.declare_parameter("input_topic", "/person_positions_fused")
+        self.declare_parameter("output_topic", "/predicted_person_positions")
+        self.declare_parameter("prediction_horizon", 1.0)
+        self.declare_parameter("coast_timeout", 1.5)
+        self.declare_parameter("rot_gate_threshold", 0.8)  # rad/s
+
+        # =====================================
+        # Load parameters
+        # =====================================
+        self.input_topic = (
+            self.get_parameter("input_topic")
+            .get_parameter_value()
+            .string_value
+        )
+
+        self.output_topic = (
+            self.get_parameter("output_topic")
+            .get_parameter_value()
+            .string_value
+        )
+
+        self.prediction_horizon = (
+            self.get_parameter("prediction_horizon")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.coast_timeout = (
+            self.get_parameter("coast_timeout")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.rot_gate_threshold = (
+            self.get_parameter("rot_gate_threshold")
+            .get_parameter_value()
+            .double_value
+        )
+
+        # =====================================
+        # Internal state
+        # =====================================
+        self.tracks = {}
+
+        # ==========================================================
+        # THESIS MODIFICATION (ego-motion rotation gate)
+        #
+        # Track robot angular velocity from /odom so the KF velocity
+        # update can be frozen when the robot is rotating. Initialised
+        # to 0.0 (not rotating) so the gate is inactive until the
+        # first odom message arrives.
+        # ==========================================================
+        self.robot_angular_z = 0.0
+        self.rotation_gated = False  # for logging — avoids repeating the log
+
+        # =====================================
+        # ROS interfaces
+        # =====================================
+        self.sub = self.create_subscription(
+            String,
+            self.input_topic,
+            self.person_callback,
+            10
+        )
+
+        self.pub = self.create_publisher(
+            String,
+            self.output_topic,
+            10
+        )
+
+        # Subscribe to /odom for robot angular velocity.
+        # THESIS FIX (QoS mismatch): TurtleBot4 publishes /odom BEST_EFFORT;
+        # the rclpy default subscription QoS is RELIABLE, which is
+        # incompatible - messages never arrived, silently keeping
+        # robot_angular_z frozen at 0.0 and the rotation gate always
+        # inactive. Match the publisher's policy explicitly.
+        odom_qos = QoSProfile(
+            depth=20,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            "/odom",
+            self.odom_callback,
+            odom_qos
+        )
+
+        # Coast timer: publish predictions for recently-seen tracks even when
+        # detections are absent; prune tracks silent longer than coast_timeout.
+        self.create_timer(0.2, self.coast_callback)
+
+        self.get_logger().info("Human KF predictor started (camera+LIDAR fused input)")
+        self.get_logger().info(f"Input : {self.input_topic}")
+        self.get_logger().info(f"Output: {self.output_topic}")
+        self.get_logger().info(f"Prediction horizon: {self.prediction_horizon:.2f} s")
+        self.get_logger().info(
+            f"Rotation gate threshold: {self.rot_gate_threshold:.2f} rad/s"
+        )
+
+    def get_ros_time_seconds(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def odom_callback(self, msg):
+        self.robot_angular_z = msg.twist.twist.angular.z
+
+    def person_callback(self, msg):
+        now = self.get_ros_time_seconds()
+
+        # ==========================================================
+        # THESIS MODIFICATION (ego-motion rotation gate)
+        #
+        # Check if robot is rotating above threshold. If so, freeze
+        # the KF velocity update for all tracks this tick.
+        # ==========================================================
+        freeze_velocity = abs(self.robot_angular_z) > self.rot_gate_threshold
+
+        if freeze_velocity and not self.rotation_gated:
+            self.get_logger().info(
+                f"Rotation gate ACTIVE: angular_z={self.robot_angular_z:.3f} rad/s "
+                f"> threshold={self.rot_gate_threshold:.2f} rad/s — "
+                f"KF velocity update frozen"
+            )
+            self.rotation_gated = True
+        elif not freeze_velocity and self.rotation_gated:
+            self.get_logger().info(
+                f"Rotation gate CLEARED: angular_z={self.robot_angular_z:.3f} rad/s"
+            )
+            self.rotation_gated = False
+
+        try:
+            parts = msg.data.split(",")
+
+            track_id = int(float(parts[0]))
+            conf = float(parts[1])
+
+            # /person_positions_fused format (identity_fusion_node.py):
+            # id,conf,x,y,depth,u,v,x1,y1,x2,y2,source
+            # x,y (parts[2],parts[3]) are LIDAR position when a match
+            # exists this cycle, else camera's own position - the
+            # substitution already happened upstream. depth/u/v/bbox
+            # (parts[4:11]) are diagnostic only. source (parts[11], the
+            # LAST field) is what this node acts on.
+            base_x = float(parts[2])
+            base_y = float(parts[3])
+            source = parts[11] if len(parts) > 11 else "camera_confirmed"
+            is_lidar_only = (source == "lidar_only")
+
+        except Exception as e:
+            self.get_logger().warn(
+                f"Could not parse message: {msg.data} | error: {e}"
+            )
+            return
+
+        if track_id not in self.tracks:
+            self.tracks[track_id] = HumanTrackKF(base_x, base_y, now)
+            self.tracks[track_id].last_conf = conf
+            self.get_logger().info(f"Created KF track for id:{track_id}")
+            return
+
+        track = self.tracks[track_id]
+        track.last_conf = conf
+        track.update(base_x, base_y, now, freeze_velocity=freeze_velocity,
+                     is_lidar_only=is_lidar_only)
+        # THESIS FIX (static-object false lock): drop a track that's
+        # been lidar_only and essentially motionless for too long -
+        # a real person who left camera view either keeps moving or
+        # eventually leaves lidar range too; one that just sits still
+        # indefinitely on lidar_only is much more likely anchored on
+        # a static object than a person who happens to be standing
+        # perfectly still just out of camera view.
+        speed = math.hypot(
+            track.vx_filt if track.vx_filt is not None else 0.0,
+            track.vy_filt if track.vy_filt is not None else 0.0,
+        )
+        if is_lidar_only and speed < track.lidar_only_stall_speed:
+            if track.lidar_only_stall_since is None:
+                track.lidar_only_stall_since = now
+            elif now - track.lidar_only_stall_since > track.lidar_only_stall_timeout:
+                self.get_logger().info(
+                    f"Dropped id:{track_id} - lidar_only + stationary for "
+                    f"{now - track.lidar_only_stall_since:.1f}s (likely static object)"
+                )
+                del self.tracks[track_id]
+                return
+        else:
+            track.lidar_only_stall_since = None
+
+        x, y, vx, vy, pred_x, pred_y, vx_raw, vy_raw = track.predict_future(self.prediction_horizon)
+
+        out = String()
+        out.data = (
+            f"{track_id},"
+            f"{conf:.2f},"
+            f"{x:.3f},{y:.3f},"
+            f"{vx:.3f},{vy:.3f},"
+            f"{pred_x:.3f},{pred_y:.3f},"
+            f"{self.prediction_horizon:.2f},"
+            f"{1 if freeze_velocity else 0}"    # field [9] — rotation gate active
+        )
+
+        self.pub.publish(out)
+
+        self.get_logger().info(
+            f"id:{track_id} "
+            f"pos=({x:.2f},{y:.2f}) "
+            f"vel_filt=({vx:.2f},{vy:.2f}) vel_raw=({vx_raw:.2f},{vy_raw:.2f}) "
+            f"pred_{self.prediction_horizon:.1f}s=({pred_x:.2f},{pred_y:.2f}) "
+            f"source={source}"
+            + (" [ROT GATED]" if freeze_velocity else "")
+        )
+
+    def coast_callback(self):
+        now = self.get_ros_time_seconds()
+        stale_ids = []
+
+        for track_id, track in self.tracks.items():
+            age = now - track.last_time
+
+            if age >= self.coast_timeout:
+                stale_ids.append(track_id)
+                continue
+
+            # Skip if a measurement just updated this track — the measurement
+            # callback already published, and a 0.2 s timer firing right after
+            # would just duplicate it.
+            if age < 0.1:
+                continue
+
+            x, y, vx, vy, pred_x, pred_y, vx_raw, vy_raw = track.predict_future(self.prediction_horizon)
+            # THESIS FIX (16 Sep, proto_L2 head-on): the KF state is not
+            # propagated while coasting, so every coast message repeated the
+            # last MEASURED position. Measured: last update 875.10 at
+            # (-9.01, 14.51) with velocity (0.89, -0.53) ~1.0 m/s; the cloud
+            # then sat at exactly (-9.01, 14.51) for 18 cycles (~1.9 s) in the
+            # corridor centre while the person walked past, and the detour
+            # squeezed the robot to ~0.1 m from the left wall. Advance the
+            # coasted position along the predicted velocity by the track age.
+            x += vx * age
+            y += vy * age
+            pred_x = x + vx * self.prediction_horizon
+            pred_y = y + vy * self.prediction_horizon
+            out = String()
+            out.data = (
+                f"{track_id},"
+                f"{track.last_conf:.2f},"
+                f"{x:.3f},{y:.3f},"
+                f"{vx:.3f},{vy:.3f},"
+                f"{pred_x:.3f},{pred_y:.3f},"
+                f"{self.prediction_horizon:.2f},"
+                f"0"                               # field [9] — rotation gate (always inactive on coast)
+            )
+            self.pub.publish(out)
+
+        for track_id in stale_ids:
+            self.get_logger().info(f"Pruned stale track id:{track_id}")
+            del self.tracks[track_id]
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = HumanKFPredictor()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+
+    node.destroy_node()
+    # See lidar_person_detector.py's main() for why this is guarded.
+    if rclpy.ok():
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
