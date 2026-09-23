@@ -44,18 +44,49 @@ export ROS_LOCALHOST_ONLY=0
 cd /root/thesis_social_navigation_ws
 
 # ----------------------------------------------------------------
+# World / map selection.
+# Override at launch time: WORLD=corridor_headon ./run_sim.sh
+#
+# Each world needs a matching map in maps/<world>.yaml (and .pgm).
+# corridor_headon requires a map recorded with SLAM in that world;
+# until then use map_name.yaml (recorded in two_human) as a
+# placeholder — Nav2 will localise but won't know the corridor walls.
+# ----------------------------------------------------------------
+WORLD="${WORLD:-corridor_headon}"
+MAP_FILE="/root/thesis_social_navigation_ws/maps/${WORLD}.yaml"
+if [ ! -f "$MAP_FILE" ]; then
+  echo "[run_sim] WARNING: no map for world '$WORLD', falling back to map_name.yaml"
+  MAP_FILE="/root/thesis_social_navigation_ws/maps/map_name.yaml"
+fi
+
+# ros_gz_bridge set_pose path must match the world name
+BRIDGE_WORLD="$WORLD"
+
+# ----------------------------------------------------------------
 # Gazebo + TurtleBot4 + Nav2 + localization + RViz
 # (turtlebot4_gz_bringup handles Gazebo spawn, robot spawn, and
 # the ros_gz bridge internally via this single launch file)
 # ----------------------------------------------------------------
+# Per-world robot spawn pose.
+# corridor_headon: west end of corridor, facing east toward the person.
+# Default (all other worlds): original origin spawn.
+if [ "$WORLD" = "corridor_headon" ]; then
+  SPAWN_X=-3.0; SPAWN_Y=0.6; SPAWN_YAW=3.14159
+else
+  SPAWN_X=0.0; SPAWN_Y=0.0; SPAWN_YAW=0.0
+fi
+
 ros2 launch turtlebot4_gz_bringup turtlebot4_gz.launch.py \
-  world:=two_human \
+  world:="$WORLD" \
+  x:="$SPAWN_X" \
+  y:="$SPAWN_Y" \
+  yaw:="$SPAWN_YAW" \
   slam:=false \
   nav2:=true \
   localization:=true \
   rviz:=true \
-  map:=/root/thesis_social_navigation_ws/maps/map_name.yaml \
-  params_file:=/root/thesis_social_navigation_ws/config/social_nav2.yaml \
+  map:="$MAP_FILE" \
+  params_file:=/root/thesis_social_navigation_ws/config/ablation/social_nav2_ablation_E_critweight20_socialcritic_on.yaml \
   gz_args:="-r" &
 
 # ----------------------------------------------------------------
@@ -119,6 +150,16 @@ done
 echo "[run_sim] Giving Nav2 lifecycle managers time to finish bringup..."
 sleep 8
 
+# ----------------------------------------------------------------
+# ros_gz_bridge: expose Gazebo's set_pose service to ROS 2 so that
+# move_person_* nodes can reposition simulated people via ROS service
+# calls instead of shelling out to `gz service` directly.
+# Must match the world name passed to turtlebot4_gz.launch.py above.
+# ----------------------------------------------------------------
+ros2 run ros_gz_bridge parameter_bridge \
+  "/world/${BRIDGE_WORLD}/set_pose@ros_gz_interfaces/srv/SetEntityPose" &
+sleep 2
+
 # A little extra settle time before starting the perception pipeline.
 # This also helps avoid "Lookup would require extrapolation into the
 # past" TF warnings seen when perception nodes start querying
@@ -134,23 +175,30 @@ sleep 5
 # ----------------------------------------------------------------
 
 # Moves the simulated person(s) in Gazebo along their motion pattern
-ros2 run social_perception move_person_gazebo2 --ros-args -p use_sim_time:=true &
+LOG_DIR="/root/thesis_social_navigation_ws/logs"
+mkdir -p "$LOG_DIR"
+echo "[run_sim] Node logs: $LOG_DIR/"
+
+ros2 run social_perception move_person_gazebo2 --ros-args -p use_sim_time:=true -p world_name:="$WORLD" 2>&1 | tee "$LOG_DIR/mover.log" | sed 's/^/[mover] /' &
 sleep 2
 
 # YOLO + ByteTrack person detection from the robot's camera
-ros2 run social_perception yolo_detector --ros-args -p use_sim_time:=true &
+ros2 run social_perception yolo_detector --ros-args -p use_sim_time:=true 2>&1 | tee "$LOG_DIR/yolo.log" | sed 's/^/[yolo] /' &
 sleep 2
 
 # Kalman-filter velocity/position predictor
-ros2 run social_perception human_kf_predictor --ros-args -p use_sim_time:=true &
+ros2 run social_perception human_kf_predictor --ros-args -p use_sim_time:=true 2>&1 | tee "$LOG_DIR/kf.log" | sed 's/^/[kf] /' &
 sleep 2
 
 # RViz marker visualizer for the predicted position (the "red sphere")
-ros2 run social_perception prediction_marker_node --ros-args -p use_sim_time:=true &
+ros2 run social_perception prediction_marker_node --ros-args -p use_sim_time:=true 2>&1 | tee "$LOG_DIR/marker.log" | sed 's/^/[marker] /' &
 sleep 2
 
 # Publishes the predicted-position obstacle/risk-zone point cloud
 # for the Nav2 local costmap
-ros2 run social_perception predicted_person_cloud_node --ros-args -p use_sim_time:=true &
+ros2 run social_perception predicted_person_cloud_node --ros-args -p use_sim_time:=true 2>&1 | tee "$LOG_DIR/cloud.log" | sed 's/^/[cloud] /' &
+
+# Head-on corridor yield: stops robot + beeps when person approaches, resumes after
+ros2 run social_perception corridor_yield_node --ros-args -p use_sim_time:=true 2>&1 | tee "$LOG_DIR/yield.log" | sed 's/^/[yield] /' &
 
 wait
