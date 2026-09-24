@@ -1,0 +1,180 @@
+bag: /root/thesis_social_navigation_ws/bags/conv_F_wide_trial1
+position reference: /sim_ground_truth_pose (exact), 2124 samples
+================================================================
+RUN
+  goal reached (reference pose, tol 0.3 m): YES
+  time start->goal: 27.4 s (sim)
+  final pose: (6.07, 0.05)
+  max x reached: 6.07  (pair axis x = 3.00)
+  stopped time (|vx|<0.02, |wz|<0.1): 0.0 s
+  spin-in-place time (|wz|>0.4): 0.0 s
+  min vx (reversing if <0): 0.06 m/s
+  plan goals seen (sim t, goal): 158:(6.0, 0.0)
+  gap window x (2.0, 3.6): 6.5 s, vx mean 0.28 / min 0.15 m/s, |y| max 1.63 m
+================================================================
+CLEARANCE (reference pose, true person poses from SDF)
+  person_1 (3.00,-0.75): min centre 2.145 m, surface +1.706 m at t=177.7 robot (3.97,1.16)
+  person_2 (3.00,0.75): min centre 0.837 m, surface +0.398 m at t=175.3 robot (3.36,1.50)
+  reference: narrow_social_distance 0.6 m, social_distance 0.94 m, contact at 0.439 m
+================================================================
+LOCALISATION (AMCL vs ground truth)
+  AMCL error: mean 0.037 m, max 0.073 m (28 samples)
+  worst sample: t=186.9, robot true x=6.03, error along corridor (x) -0.073 m, across (y) +0.001 m
+  max error while in gap window: 0.040 m, max |y| error there 0.031 m
+================================================================
+GROUP DETECTION (/social_groups)
+  msgs 46, narrow 0/46 (0%), buffer min/med/max 0.400/0.400/0.400
+  detected member (lower-y #0) mean (2.848,-0.850) vs person_1 (3.00,-0.75): error 0.182 m
+  detected member (lower-y #1) mean (2.881,0.636) vs person_2 (3.00,0.75): error 0.165 m
+  first group msg at bag t=1790254936.0, last at 1790254980.5
+  last zone mask at true midpoint (3.00,0.00): 0  (narrow expects 35, wide 90)
+================================================================
+PLANNER / SIM
+  /plan msgs 251, through the gap 0
+  RTF (sim/wall over bag): 0.52
+================================================================
+wrote /root/thesis_social_navigation_ws/bags/conv_F_wide_trial1/trajectory.csv
+bag: /root/thesis_social_navigation_ws/bags/conv_F_wide_trial2
+position reference: /sim_ground_truth_pose (exact), 1652 samples
+================================================================
+RUN
+  goal reached (reference pose, tol 0.3 m): YES
+  time start->goal: 27.7 s (sim)
+  final pose: (6.13, 0.09)
+  max x reached: 6.13  (pair axis x = 3.00)
+  stopped time (|vx|<0.02, |wz|<0.1): 0.0 s
+  spin-in-place time (|wz|>0.4): 0.0 s
+  min vx (reversing if <0): 0.11 m/s
+  plan goals seen (sim t, goal): 27:(6.0, 0.0)
+  gap window x (2.0, 3.6): 6.1 s, vx mean 0.28 / min 0.21 m/s, |y| max 1.77 m
+================================================================
+CLEARANCE (reference pose, true person poses from SDF)
+  person_1 (3.00,-0.75): min centre 2.186 m, surface +1.747 m at t=45.4 robot (3.99,1.20)
+  person_2 (3.00,0.75): min centre 0.869 m, surface +0.430 m at t=42.9 robot (3.39,1.53)
+  reference: narrow_social_distance 0.6 m, social_distance 0.94 m, contact at 0.439 m
+================================================================
+LOCALISATION (AMCL vs ground truth)
+  AMCL error: mean 0.079 m, max 0.618 m (30 samples)
+  worst sample: t=21.2, robot true x=-0.05, error along corridor (x) -0.590 m, across (y) -0.185 m
+  max error while in gap window: 0.029 m, max |y| error there 0.024 m
+================================================================
+GROUP DETECTION (/social_groups)
+  msgs 48, narrow 0/48 (0%), buffer min/med/max 0.400/0.400/0.400
+  detected member (lower-y #0) mean (2.830,-0.791) vs person_1 (3.00,-0.75): error 0.175 m
+  detected member (lower-y #1) mean (2.811,0.759) vs person_2 (3.00,0.75): error 0.189 m
+  first group msg at bag t=1790255402.7, last at 1790255444.6
+  last zone mask at true midpoint (3.00,0.00): 0  (narrow expects 35, wide 90)
+================================================================
+PLANNER / SIM
+  /plan msgs 221, through the gap 0
+  RTF (sim/wall over bag): 0.57
+================================================================
+wrote /root/thesis_social_navigation_ws/bags/conv_F_wide_trial2/trajectory.csv
+bag: /root/thesis_social_navigation_ws/bags/conv_F_wide_trial3
+position reference: /sim_ground_truth_pose (exact), 1871 samples
+================================================================
+RUN
+  goal reached (reference pose, tol 0.3 m): YES
+  time start->goal: 26.8 s (sim)
+  final pose: (6.22, 0.09)
+  max x reached: 6.22  (pair axis x = 3.00)
+  stopped time (|vx|<0.02, |wz|<0.1): 0.0 s
+  spin-in-place time (|wz|>0.4): 0.0 s
+  min vx (reversing if <0): 0.06 m/s
+  plan goals seen (sim t, goal): 47:(6.0, 0.0)
+  gap window x (2.0, 3.6): 6.0 s, vx mean 0.29 / min 0.24 m/s, |y| max 1.62 m
+================================================================
+CLEARANCE (reference pose, true person poses from SDF)
+  person_1 (3.00,-0.75): min centre 2.179 m, surface +1.740 m at t=66.3 robot (4.11,1.13)
+  person_2 (3.00,0.75): min centre 0.839 m, surface +0.400 m at t=62.7 robot (3.20,1.57)
+  reference: narrow_social_distance 0.6 m, social_distance 0.94 m, contact at 0.439 m
+================================================================
+LOCALISATION (AMCL vs ground truth)
+  AMCL error: mean 0.072 m, max 0.178 m (27 samples)
+  worst sample: t=74.8, robot true x=6.07, error along corridor (x) -0.177 m, across (y) -0.020 m
+  max error while in gap window: 0.081 m, max |y| error there 0.027 m
+================================================================
+GROUP DETECTION (/social_groups)
+  msgs 67, narrow 0/67 (0%), buffer min/med/max 0.400/0.400/0.400
+  detected member (lower-y #0) mean (2.836,-0.735) vs person_1 (3.00,-0.75): error 0.165 m
+  detected member (lower-y #1) mean (2.833,0.713) vs person_2 (3.00,0.75): error 0.171 m
+  first group msg at bag t=1790255740.6, last at 1790255801.8
+  last zone mask at true midpoint (3.00,0.00): 90  (narrow expects 35, wide 90)
+================================================================
+PLANNER / SIM
+  /plan msgs 242, through the gap 0
+  RTF (sim/wall over bag): 0.54
+================================================================
+wrote /root/thesis_social_navigation_ws/bags/conv_F_wide_trial3/trajectory.csv
+bag: /root/thesis_social_navigation_ws/bags/conv_F_wide_trial4
+position reference: /sim_ground_truth_pose (exact), 2104 samples
+================================================================
+RUN
+  goal reached (reference pose, tol 0.3 m): YES
+  time start->goal: 28.0 s (sim)
+  final pose: (6.09, 0.07)
+  max x reached: 6.09  (pair axis x = 3.00)
+  stopped time (|vx|<0.02, |wz|<0.1): 0.0 s
+  spin-in-place time (|wz|>0.4): 0.0 s
+  min vx (reversing if <0): 0.05 m/s
+  plan goals seen (sim t, goal): 31:(6.0, 0.0)
+  gap window x (2.0, 3.6): 6.4 s, vx mean 0.27 / min 0.17 m/s, |y| max 1.67 m
+================================================================
+CLEARANCE (reference pose, true person poses from SDF)
+  person_1 (3.00,-0.75): min centre 2.178 m, surface +1.739 m at t=51.0 robot (4.01,1.18)
+  person_2 (3.00,0.75): min centre 0.860 m, surface +0.421 m at t=48.1 robot (3.33,1.55)
+  reference: narrow_social_distance 0.6 m, social_distance 0.94 m, contact at 0.439 m
+================================================================
+LOCALISATION (AMCL vs ground truth)
+  AMCL error: mean 0.045 m, max 0.062 m (28 samples)
+  worst sample: t=54.6, robot true x=4.77, error along corridor (x) -0.029 m, across (y) -0.054 m
+  max error while in gap window: 0.061 m, max |y| error there 0.050 m
+================================================================
+GROUP DETECTION (/social_groups)
+  msgs 71, narrow 0/71 (0%), buffer min/med/max 0.400/0.400/0.400
+  detected member (lower-y #0) mean (2.835,-0.805) vs person_1 (3.00,-0.75): error 0.174 m
+  detected member (lower-y #1) mean (2.863,0.726) vs person_2 (3.00,0.75): error 0.139 m
+  first group msg at bag t=1790255886.0, last at 1790255953.3
+  last zone mask at true midpoint (3.00,0.00): 90  (narrow expects 35, wide 90)
+================================================================
+PLANNER / SIM
+  /plan msgs 259, through the gap 0
+  RTF (sim/wall over bag): 0.52
+================================================================
+wrote /root/thesis_social_navigation_ws/bags/conv_F_wide_trial4/trajectory.csv
+bag: /root/thesis_social_navigation_ws/bags/conv_F_wide_trial5
+position reference: /sim_ground_truth_pose (exact), 1901 samples
+================================================================
+RUN
+  goal reached (reference pose, tol 0.3 m): YES
+  time start->goal: 27.5 s (sim)
+  final pose: (6.15, 0.06)
+  max x reached: 6.15  (pair axis x = 3.00)
+  stopped time (|vx|<0.02, |wz|<0.1): 0.0 s
+  spin-in-place time (|wz|>0.4): 0.0 s
+  min vx (reversing if <0): 0.07 m/s
+  plan goals seen (sim t, goal): 41:(6.0, 0.0)
+  gap window x (2.0, 3.6): 6.1 s, vx mean 0.29 / min 0.23 m/s, |y| max 1.65 m
+================================================================
+CLEARANCE (reference pose, true person poses from SDF)
+  person_1 (3.00,-0.75): min centre 2.203 m, surface +1.764 m at t=60.7 robot (4.03,1.20)
+  person_2 (3.00,0.75): min centre 0.848 m, surface +0.409 m at t=57.7 robot (3.27,1.55)
+  reference: narrow_social_distance 0.6 m, social_distance 0.94 m, contact at 0.439 m
+================================================================
+LOCALISATION (AMCL vs ground truth)
+  AMCL error: mean 0.054 m, max 0.115 m (28 samples)
+  worst sample: t=69.4, robot true x=5.92, error along corridor (x) -0.114 m, across (y) +0.016 m
+  max error while in gap window: 0.070 m, max |y| error there 0.050 m
+================================================================
+GROUP DETECTION (/social_groups)
+  msgs 71, narrow 0/71 (0%), buffer min/med/max 0.400/0.400/0.400
+  detected member (lower-y #0) mean (2.851,-0.732) vs person_1 (3.00,-0.75): error 0.150 m
+  detected member (lower-y #1) mean (2.855,0.700) vs person_2 (3.00,0.75): error 0.153 m
+  first group msg at bag t=1790256041.8, last at 1790256119.6
+  last zone mask at true midpoint (3.00,0.00): 90  (narrow expects 35, wide 90)
+================================================================
+PLANNER / SIM
+  /plan msgs 297, through the gap 0
+  RTF (sim/wall over bag): 0.45
+================================================================
+wrote /root/thesis_social_navigation_ws/bags/conv_F_wide_trial5/trajectory.csv
