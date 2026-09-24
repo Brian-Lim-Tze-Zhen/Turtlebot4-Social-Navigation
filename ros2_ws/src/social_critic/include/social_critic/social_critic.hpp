@@ -23,6 +23,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "nav2_mppi_controller/critic_function.hpp"
@@ -64,6 +66,18 @@ struct Target
   float vx{0.0f};
   float vy{0.0f};
   float weight_scale{1.0f};
+  // Per-target clearance. social_distance_ normally; narrow_social_distance_
+  // for members of a confirmed NARROW group when group_aware_ is on.
+  float social_distance{0.94f};
+};
+
+// THESIS ADDITION (ablation F, narrow case). One group from /social_groups,
+// member positions in the map frame (field 9), narrow flag from field 10.
+struct GroupState
+{
+  std::vector<std::pair<double, double>> members;
+  bool narrow{false};
+  rclcpp::Time last_seen;
 };
 
 class SocialCritic : public CriticFunction
@@ -74,6 +88,11 @@ public:
 
 private:
   void positionsCallback(const std_msgs::msg::String::SharedPtr msg);
+  void groupsCallback(const std_msgs::msg::String::SharedPtr msg);
+
+  // True if (x, y) in the map frame is within member_match_radius_ of a
+  // member of a fresh narrow group.
+  bool isNarrowGroupMember(double x, double y, const rclcpp::Time & now);
 
   // Returns everything worth penalising, in the costmap frame: current
   // positions, KF predictions, and coasted extrapolations of tracks that
@@ -85,6 +104,10 @@ private:
 
   std::mutex people_mutex_;
   std::vector<PersonState> people_;
+
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr group_sub_;
+  std::mutex groups_mutex_;
+  std::unordered_map<std::string, GroupState> groups_;
 
   // --- parameters ---
   // Centre-to-centre distance at which the penalty reaches zero. This is
@@ -137,6 +160,23 @@ private:
   float max_coast_speed_{2.5};      // above this the KF estimate is junk
   std::string person_frame_{"map"};
   std::string topic_{"/predicted_person_positions"};
+
+  // --- GROUP AWARENESS (ablation F narrow case) ---
+  // The global-costmap social zone prices the gap between the two members
+  // of a NARROW group as passable (o-space 35). With social_distance_ 0.94
+  // and a ~1.4 m gap, this critic penalised every trajectory through that
+  // gap, so MPPI stalled at the entrance (pilot conv_F_narrow_pilot01:
+  // robot stopped 0.94 m from both members, Failed to make progress).
+  // When enabled, members of a fresh narrow group get narrow_social_distance_
+  // instead, so the critic defers to the zone's narrow decision.
+  // Default OFF: conditions A-E are unchanged unless their YAML sets it.
+  bool group_aware_{false};
+  float narrow_social_distance_{0.60f};
+  std::string group_topic_{"/social_groups"};
+  double group_timeout_{4.0};          // s; matches the zone node GROUP_TIMEOUT
+  double member_match_radius_{0.5};    // m; person <-> group member association
+  // MUST match the zone node: narrow = buffer < 0.4 - 0.01
+  double narrow_buffer_threshold_{0.39};
 
   rclcpp::Logger logger_{rclcpp::get_logger("SocialCritic")};
 };

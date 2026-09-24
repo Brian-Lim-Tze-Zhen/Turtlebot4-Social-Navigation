@@ -98,6 +98,9 @@ PROMPTS = ["people facing each other", "people not facing each other"]
 
 # Zone geometry
 ZONE_BUFFER = 0.4                # m; nominal buffer (group_formation_detector.py)
+PERSON_BODY_RADIUS = 0.25        # m; matches SDF person collision radius and
+                                  # the zone node's 0.25 m lethal body core.
+                                  # Gap is measured beyond the body SURFACE.
 MIN_ZONE_BUFFER = 0.05           # m; floor - never shrink below this
 SIDE_BY_SIDE_FORWARD_EXTENT = 1.2  # m; UNVALIDATED placeholder, see prior
                                     # discussion - not from proxemics
@@ -598,25 +601,28 @@ class SocialGroupDetector(Node):
             dist += step
         return CLEARANCE_PROBE_MAX
 
-    def _effective_buffer(self, cx, cy, axis_x, axis_y):
-        """Option 1: shrink ZONE_BUFFER to fit available corridor space.
-        Probes perpendicular to the given axis (the direction the zone's
-        half_width extends into) in both directions, sums to get total
-        available width, and caps the buffer so 2*(dist/2+buffer) <=
-        available width. Floors at MIN_ZONE_BUFFER rather than going to
-        zero - see prior discussion on when this should instead trigger
-        a yield/wait behavior (Option 2, NOT implemented in this file)."""
-        perp_x, perp_y = -axis_y, axis_x
-        clearance = (
-            self._probe_clearance(cx, cy, perp_x, perp_y, 1.0)
-            + self._probe_clearance(cx, cy, perp_x, perp_y, -1.0)
+    def _effective_buffer(self, cx, cy, axis_x, axis_y, sep):
+        """Fix 2: probe ALONG the pair axis from the midpoint, both ways.
+        Free gap beyond each member = probe distance - sep/2. Wide
+        (ZONE_BUFFER) if EITHER side leaves >= ZONE_BUFFER, i.e. the robot
+        can pass around the outside of one member. Otherwise the buffer is
+        the larger of the two gaps, floored at MIN_ZONE_BUFFER.
+        Assumes costmap_topic is a STATIC map (people not in it) - on a
+        live costmap the probe would stop at member A/B itself."""
+        half_sep = sep / 2.0
+        gap_pos = (self._probe_clearance(cx, cy, axis_x, axis_y, 1.0)
+                   - half_sep - PERSON_BODY_RADIUS)
+        gap_neg = (self._probe_clearance(cx, cy, axis_x, axis_y, -1.0)
+                   - half_sep - PERSON_BODY_RADIUS)
+        best_gap = max(gap_pos, gap_neg)
+        if best_gap >= ZONE_BUFFER:
+            return ZONE_BUFFER
+        buffer = max(MIN_ZONE_BUFFER, best_gap)
+        self.get_logger().info(
+            f"Zone buffer shrunk {ZONE_BUFFER:.2f}m -> {buffer:.2f}m "
+            f"(gaps beyond members {gap_pos:.2f}/{gap_neg:.2f}m, sep {sep:.2f}m)",
+            throttle_duration_sec=2.0,
         )
-        buffer = min(ZONE_BUFFER, max(MIN_ZONE_BUFFER, clearance / 2.0))
-        if buffer < ZONE_BUFFER - 1e-3:
-            self.get_logger().info(
-                f"Zone buffer shrunk {ZONE_BUFFER:.2f}m -> {buffer:.2f}m "
-                f"(measured clearance {clearance:.2f}m)"
-            )
         return buffer
 
     # -------------------------------------------------------------
@@ -629,7 +635,7 @@ class SocialGroupDetector(Node):
         axis_x = dx / dist if dist > 1e-6 else 1.0
         axis_y = dy / dist if dist > 1e-6 else 0.0
 
-        buffer = self._effective_buffer(cx, cy, axis_x, axis_y)
+        buffer = self._effective_buffer(cx, cy, axis_x, axis_y, dist)
         half_length = dist / 2.0 + buffer
         half_width = buffer
 
@@ -650,7 +656,7 @@ class SocialGroupDetector(Node):
         # The hallway-constrained dimension here is ACROSS the pair
         # (conn direction), same reasoning as the facing zone's
         # half_width - so Option 1 probes along conn, not along axis.
-        buffer = self._effective_buffer(cx, cy, conn_x, conn_y)
+        buffer = self._effective_buffer(cx, cy, conn_x, conn_y, dist)
         half_width = dist / 2.0 + buffer
         half_length = SIDE_BY_SIDE_FORWARD_EXTENT  # not costmap-shrunk
 

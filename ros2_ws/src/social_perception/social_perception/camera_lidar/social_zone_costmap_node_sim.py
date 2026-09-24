@@ -404,7 +404,7 @@ class SocialZoneCostmapNode(Node):
         half_length = z["separation"] / 2.0 + ZONE_MARGIN
         half_width = ZONE_MARGIN
         cost = O_SPACE_COST_NARROW if z["narrow"] else O_SPACE_COST_WIDE
-        yield (z["cx"], z["cy"], half_length, half_width, cost)
+        yield (z["cx"], z["cy"], half_length, half_width, cost, False)
 
         # THESIS FIX (23 Sep, wide-case bodies): halo + lethal core are
         # painted in BOTH branches. predicted_person_cloud_node_lidar.py
@@ -415,12 +415,25 @@ class SocialZoneCostmapNode(Node):
         # takes the per-cell maximum, so the core wins inside its halo.
         for (px, py) in (z["member_a"], z["member_b"]):
             yield (px, py, PERSONAL_SPACE_RADIUS_M, PERSONAL_SPACE_RADIUS_M,
-                   PERSONAL_SPACE_COST)
+                   PERSONAL_SPACE_COST, False)
+
+        # THESIS FIX (23 Sep, narrow o-space vs halo): at separations below
+        # 2 * PERSONAL_SPACE_RADIUS_M (1.6 m) the two halos cover the whole
+        # gap, and the per-cell maximum let 80 bury the narrow o-space cost
+        # (probe: midpoint 80, expected 35). In the narrow branch the GAP
+        # between the two bodies is therefore painted OVERWRITE, after the
+        # halos and before the cores: halo stays everywhere outside the
+        # gap, cores still win inside it. Wide branch unchanged.
+        if z["narrow"]:
+            gap_hl = max(MIN_O_SPACE_HALF_LENGTH,
+                         z["separation"] / 2.0 - BODY_CLEARANCE)
+            yield (z["cx"], z["cy"], gap_hl, ZONE_MARGIN,
+                   O_SPACE_COST_NARROW, True)
 
         # Lethal body cores, painted as circles (hl == hw).
         for (px, py) in (z["member_a"], z["member_b"]):
             yield (px, py, BODY_CORE_RADIUS_M, BODY_CORE_RADIUS_M,
-                   BODY_CORE_COST)
+                   BODY_CORE_COST, False)
 
         if not z["narrow"]:
             return  # wide corridor: flanks stay free, going around is cheap
@@ -432,7 +445,7 @@ class SocialZoneCostmapNode(Node):
         for (px, py), sign in ((z["member_a"], -1.0), (z["member_b"], 1.0)):
             yield (px + sign * FLANK_OFFSET * ax,
                    py + sign * FLANK_OFFSET * ay,
-                   FLANK_HALF_LENGTH, FLANK_HALF_WIDTH, FLANK_COST_NARROW)
+                   FLANK_HALF_LENGTH, FLANK_HALF_WIDTH, FLANK_COST_NARROW, False)
 
     # -----------------------------------------------------------------
     def publish_grid(self):
@@ -467,7 +480,7 @@ class SocialZoneCostmapNode(Node):
 
         for z in self.zones.values():
             ax, ay = z["ax"], z["ay"]
-            for (rcx, rcy, hl, hw, cost) in self._regions(z):
+            for (rcx, rcy, hl, hw, cost, overwrite) in self._regions(z):
                 # Paint only the bounding box of this ellipse, not the
                 # whole map. The full grid is allocated once above; this
                 # keeps per-region work proportional to the zone, not the
@@ -497,9 +510,13 @@ class SocialZoneCostmapNode(Node):
                 # survive automatically - no zone cost reaches 100.
                 # Unknown cells (-1) are excluded: raising them to a zone
                 # cost would silently declare unmapped space traversable.
-                painted = np.where(mask, cost, 0).astype(np.int8)
-                np.maximum(sub, np.where(sub >= 0, painted, 0).astype(np.int8),
-                           out=sub)
+                if overwrite:
+                    # Narrow gap only: replace, do not max (see _regions).
+                    sub[mask & (sub >= 0)] = cost
+                else:
+                    painted = np.where(mask, cost, 0).astype(np.int8)
+                    np.maximum(sub, np.where(sub >= 0, painted, 0).astype(np.int8),
+                               out=sub)
                 sub[self.map_base[j0:j1 + 1, i0:i1 + 1] < 0] = MAP_UNKNOWN_COST
 
         self._publish(grid)
