@@ -58,7 +58,7 @@ After launch, in RViz: use **2D Pose Estimate** to set the robot's initial
 pose on the map before sending navigation goals (required since this runs
 in AMCL localization mode, not SLAM).
 
-## Ablation F — conversation group, narrow corridor
+## Ablation F — conversation group, wide (open space)
 
 Condition F gives a detected conversation pair a graded social zone,
 published by `social_zone_costmap_node_sim.py` as a KeepoutFilter mask on
@@ -72,6 +72,112 @@ buffer (field 10 of `/social_groups`) that the group detector measures:
 
 Both shapes keep a 0.25 m lethal body core (100) and a 0.8 m
 personal-space halo (80) around each member.
+
+The wide and narrow cases use the same condition F stack: the same config,
+nodes and SocialCritic build. Only the world differs, which decides the shape.
+
+### Wide test world
+
+`conversation_test.sdf` places the pair at (3.0, ±0.75) facing each other in
+open space. The spawn is (−1, 0, π), facing **away** from the pair, and the
+goal is (6, 0). The free flank gap beyond each member, measured along the pair axis on
+the static `/map`, is 4.25 m and 4.15 m. The detector therefore reports
+buffer 0.400 (wide) and the zone paints o-space 90 with no flank lobes, so
+routing around the pair is cheaper than passing between them.
+
+The narrow-case changes (1–3, in the narrow section below) are inactive
+here, by design. The probe
+finds room on both flanks. The halo-overwrite in the gap exists only in the
+narrow branch. `group_aware` only relaxes the distance for members of
+*narrow* groups, so SocialCritic keeps `social_distance` 0.94 m.
+
+### What had to change for the wide case
+
+**Body core and halo in the wide branch** (`social_zone_costmap_node_sim.py`,
+`_regions()`). The 0.25 m lethal core and 0.8 m halo used to be yielded only
+after the narrow-only `return`. `predicted_person_cloud_node_lidar.py` defers
+conversation members (`not in ("queue", "conversation")`), so in the wide
+case nothing painted the bodies. The global obstacle layer only marks people
+from `/scan` within `obstacle_max_range` 2.5 m, so at planning time (about
+4 m away) the pair existed in the global costmap only as the o-space.
+
+A costmap probe at spawn showed the fix. Before: members 89, 0.6 m outside
+each member 0. After: members 100, 0.6 m outside 79, zone centre 89
+(unchanged). An earlier pre-fix pass had skimmed a member at 0.622 m
+centre-to-centre (n = 1).
+
+### Running a wide trial
+
+A fresh launch each trial, headless:
+
+    ros2 launch turtlebot4_gz_bringup turtlebot4_gz.launch.py world:=conversation_test slam:=false nav2:=true localization:=true rviz:=true map:=/root/thesis_social_navigation_ws/maps/map_name.yaml params_file:=/root/thesis_social_navigation_ws/config/social_nav2_ablation_F_socialzone_sim.yaml headless:=true x:=-1.0 y:=0.0 yaw:=3.14
+
+The steps are as listed under *Running a narrow trial* below, with these
+differences:
+
+- Step 1: publish `/initialpose` at (−1, 0, 3.14), matching the spawn yaw.
+- Step 3: wait until `/social_groups` field 10 reads **0.400** (wide) and
+  the detector logs `Pair (a,b) confirmed: facing`.
+- The bags are `bags/conv_F_wide_trial1` … `trial5`, recorded with the
+  same topic list as the narrow trials.
+- Provenance uses the world `conversation_test.sdf` and the `nav2_F_wide*`
+  log. Copy it right after each trial, because the command takes the newest log.
+
+Analyse all five trials with the same script as the narrow case, so both
+cases use identical metric definitions:
+
+    for b in /root/thesis_social_navigation_ws/bags/conv_F_wide_trial*; do python3 /root/thesis_social_navigation_ws/analysis/analyse_F_narrow.py $b; done 2>&1 | tee /root/thesis_social_navigation_ws/analysis/conv_F_wide_report.txt
+
+### Results (simulation, 24 Sep 2026)
+
+Wide case, same F config (`group_aware=on`, inactive for wide groups), no
+speed limiter, n = 5 protocol trials:
+
+| Metric | Mean ± SD | Range |
+|---|---|---|
+| Goal reached | 5 / 5 | — |
+| Time to goal | 27.5 ± 0.4 s | 26.8 – 28.0 |
+| Min centre distance (GT) | 0.851 ± 0.014 m | 0.837 – 0.869 |
+| Min surface clearance (GT) | +0.412 ± 0.014 m | +0.398 – +0.430 |
+| Stopped / spin-in-place time | 0.0 / 0.0 s | all runs |
+| vx in gap window (mean / min) | 0.28 ± 0.01 / 0.20 ± 0.04 m/s | min 0.15 |
+| Passing side / max \|y\| | around +y in 5 / 5 / 1.67 ± 0.06 m | 1.62 – 1.77 |
+| Plans through the gap | 0 in all runs | — |
+| AMCL error in gap window (max / lateral) | 0.056 ± 0.021 / 0.036 ± 0.013 m | lateral ≤ 0.050 |
+| Member position error (p1 / p2) | 0.169 ± 0.012 / 0.163 ± 0.019 m | ≤ 0.189 |
+| Wide classification | 100 % of `/social_groups` msgs | buffer 0.400 in all msgs |
+| Real-time factor (headless) | 0.52 ± 0.04 | 0.45 – 0.57 |
+
+In open space the planner routes around the pair in every run, on the same
+side, with a 1.4 cm spread in clearance and no hesitation.
+
+**Caveats**
+
+- The minimum centre distance (0.851 m) is below `social_distance` 0.94 m.
+  SocialCritic does not hold its full target distance here; the halo and
+  the global plan decide the passing distance.
+- The last zone mask in trials 1–2 reads 0, against 90 in trials 3–5. The
+  analysis reads the **last** mask in the bag, and the zone node publishes
+  an empty mask on shutdown, so it was most likely stopped before the bag.
+  The trajectories match trials 3–5, but the bags do not prove the zone was
+  active during the pass. A per-pass mask check is still to do.
+- The member position error (~0.17 m) is larger than in the narrow case
+  (~0.10 m). It is a systematic offset toward the robot, since detection
+  measures the robot-facing body surface rather than the centre.
+- Trial 2 has an AMCL error of 0.618 m at t = 21.2 s, during initial
+  convergence before the goal was sent (goal at t = 27). In the gap window
+  it stayed at 0.029 m.
+- The spawn faces away from the pair (yaw π), unlike the narrow case (yaw 0).
+  The robot turns in place before driving. The analysis run window starts at
+  the first forward motion (|vx| > 0.05 m/s), so the turn is excluded from
+  the time and stop metrics.
+- The RTF is 0.52, below real time, and similar to the narrow set (0.55).
+  Perception latency therefore counts for fewer sim-seconds than it would
+  on hardware.
+
+## Ablation F — conversation group, narrow corridor
+
+The zone shapes and shared stack are described in the wide section above.
 
 ### Narrow test world
 
@@ -188,104 +294,6 @@ confirms the critic as the sole cause of the stall.
   pair, but relevant for moving-person conditions.
 - `social_zone_speed_limiter.py`, the "passes through slowly" behaviour,
   was not part of these runs.
-
-## Ablation F — conversation group, wide (open space)
-
-This is the same condition F stack as the narrow case, with the same config,
-nodes and SocialCritic build. Only the world changes, so the zone detector
-selects the **wide** shape.
-
-### Wide test world
-
-`conversation_test.sdf` places the pair at (3.0, ±0.75) facing each other in
-open space. The spawn is (−1, 0, 0) and the goal (6, 0), as in the narrow
-case. The free flank gap beyond each member, measured along the pair axis on
-the static `/map`, is 4.25 m and 4.15 m. The detector therefore reports
-buffer 0.400 (wide) and the zone paints o-space 90 with no flank lobes, so
-routing around the pair is cheaper than passing between them.
-
-The narrow-case changes (1–3 above) are inactive here, by design. The probe
-finds room on both flanks. The halo-overwrite in the gap exists only in the
-narrow branch. `group_aware` only relaxes the distance for members of
-*narrow* groups, so SocialCritic keeps `social_distance` 0.94 m.
-
-### What had to change for the wide case
-
-**Body core and halo in the wide branch** (`social_zone_costmap_node_sim.py`,
-`_regions()`). The 0.25 m lethal core and 0.8 m halo used to be yielded only
-after the narrow-only `return`. `predicted_person_cloud_node_lidar.py` defers
-conversation members (`not in ("queue", "conversation")`), so in the wide
-case nothing painted the bodies. The global obstacle layer only marks people
-from `/scan` within `obstacle_max_range` 2.5 m, so at planning time (about
-4 m away) the pair existed in the global costmap only as the o-space.
-
-A costmap probe at spawn showed the fix. Before: members 89, 0.6 m outside
-each member 0. After: members 100, 0.6 m outside 79, zone centre 89
-(unchanged). An earlier pre-fix pass had skimmed a member at 0.622 m
-centre-to-centre (n = 1).
-
-### Running a wide trial
-
-Same protocol as the narrow case, with a fresh launch each trial, headless:
-
-    ros2 launch turtlebot4_gz_bringup turtlebot4_gz.launch.py world:=conversation_test slam:=false nav2:=true localization:=true rviz:=true map:=/root/thesis_social_navigation_ws/maps/map_name.yaml params_file:=/root/thesis_social_navigation_ws/config/social_nav2_ablation_F_socialzone_sim.yaml headless:=true x:=-1.0 y:=0.0 yaw:=0.0
-
-Differences from the narrow protocol:
-
-- Step 3: wait until `/social_groups` field 10 reads **0.400** (wide) and
-  the detector logs `Pair (a,b) confirmed: facing`.
-- The bags are `bags/conv_F_wide_trial1` … `trial5`, recorded with the
-  same topic list as the narrow trials.
-- Provenance uses the world `conversation_test.sdf` and the `nav2_F_wide*`
-  log. Copy it right after each trial, because the command takes the newest log.
-
-Analyse all five trials with the same script as the narrow case, so both
-cases use identical metric definitions:
-
-    for b in /root/thesis_social_navigation_ws/bags/conv_F_wide_trial*; do python3 /root/thesis_social_navigation_ws/analysis/analyse_F_narrow.py $b; done 2>&1 | tee /root/thesis_social_navigation_ws/analysis/conv_F_wide_report.txt
-
-### Results (simulation, 24 Sep 2026)
-
-Wide case, same F config (`group_aware=on`, inactive for wide groups), no
-speed limiter, n = 5 protocol trials:
-
-| Metric | Mean ± SD | Range |
-|---|---|---|
-| Goal reached | 5 / 5 | — |
-| Time to goal | 27.5 ± 0.4 s | 26.8 – 28.0 |
-| Min centre distance (GT) | 0.851 ± 0.014 m | 0.837 – 0.869 |
-| Min surface clearance (GT) | +0.412 ± 0.014 m | +0.398 – +0.430 |
-| Stopped / spin-in-place time | 0.0 / 0.0 s | all runs |
-| vx in gap window (mean / min) | 0.28 ± 0.01 / 0.20 ± 0.04 m/s | min 0.15 |
-| Passing side / max \|y\| | around +y in 5 / 5 / 1.67 ± 0.06 m | 1.62 – 1.77 |
-| Plans through the gap | 0 in all runs | — |
-| AMCL error in gap window (max / lateral) | 0.056 ± 0.021 / 0.036 ± 0.013 m | lateral ≤ 0.050 |
-| Member position error (p1 / p2) | 0.169 ± 0.012 / 0.163 ± 0.019 m | ≤ 0.189 |
-| Wide classification | 100 % of `/social_groups` msgs | buffer 0.400 in all msgs |
-| Real-time factor (headless) | 0.52 ± 0.04 | 0.45 – 0.57 |
-
-In open space the planner routes around the pair in every run, on the same
-side, with a 1.4 cm spread in clearance and no hesitation.
-
-**Caveats**
-
-- The minimum centre distance (0.851 m) is below `social_distance` 0.94 m.
-  SocialCritic does not hold its full target distance here; the halo and
-  the global plan decide the passing distance.
-- The last zone mask in trials 1–2 reads 0, against 90 in trials 3–5. The
-  analysis reads the **last** mask in the bag, and the zone node publishes
-  an empty mask on shutdown, so it was most likely stopped before the bag.
-  The trajectories match trials 3–5, but the bags do not prove the zone was
-  active during the pass. A per-pass mask check is still to do.
-- The member position error (~0.17 m) is larger than in the narrow case
-  (~0.10 m). It is a systematic offset toward the robot, since detection
-  measures the robot-facing body surface rather than the centre.
-- Trial 2 has an AMCL error of 0.618 m at t = 21.2 s, during initial
-  convergence before the goal was sent (goal at t = 27). In the gap window
-  it stayed at 0.029 m.
-- The RTF is 0.52, below real time, and similar to the narrow set (0.55).
-  Perception latency therefore counts for fewer sim-seconds than it would
-  on hardware.
 
 ## Ablation F — wide vs narrow (n = 5 each)
 
