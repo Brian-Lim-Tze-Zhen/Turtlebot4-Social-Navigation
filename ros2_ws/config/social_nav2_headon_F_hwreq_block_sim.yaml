@@ -187,7 +187,21 @@ controller_server:
         # Keep-side block for the GLOBAL planner (see social_critic.hpp): the plan
         # takes the same side as the controller from first sight.
         publish_lane_block: true
-        lane_block_width: 1.5
+        # 1.5 -> 0.4: 1.5 sealed the 2.5 m corridor but piles up with several
+        # walkers. 0.4 steered NavFn as well (0-4 of ~30 plans on the wrong side,
+        # as at 0.8 and 1.5); centred-walker clearance was a few cm lower
+        # (0.757-0.843 m over 4 runs).
+        lane_block_width: 0.4
+        # Several walkers: handle the nearest one first (see social_critic.hpp).
+        lane_nearest_only: true
+        # A reused track id on a different person gets a fresh lane.
+        lane_jump_reset: 1.5
+        # Slow to 0.10 m/s while a walker goes by and for 1 s after: someone
+        # may be hidden behind it (see social_critic.hpp).
+        occlusion_slow_weight: 300.0
+        occlusion_slow_speed: 0.10
+        occlusion_slow_gap: 1.0
+        occlusion_slow_after_s: 1.0
         lane_block_overlap: 0.30
         lane_block_robot_gap: 1.0
         lane_lateral_trust: 0.0

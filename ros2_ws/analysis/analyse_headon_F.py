@@ -91,11 +91,12 @@ def load(uri):
     types = {t.name: t.type for t in r.get_all_topics_and_types()}
     want = ["/odom", "/sim_ground_truth_pose", "/amcl_pose", "/person_ground_truth",
             "/clock", "/person_positions_fused", "/predicted_person_positions", "/plan"]
-    have = [t for t in want if t in types]
+    optional = ["/person2_ground_truth"]   # second walker (PERSON2_Y trials)
+    have = [t for t in want + optional if t in types]
     r.set_filter(StorageFilter(topics=have))
     mt = {t: get_message(types[t]) for t in have}
 
-    d = {"odom": [], "gt": [], "amcl": [], "person": [], "clock": [],
+    d = {"odom": [], "gt": [], "amcl": [], "person": [], "person2": [], "clock": [],
          "fused": [], "kf": [], "plans": 0,
          "missing": [t for t in want if t not in types]}
     while r.has_next():
@@ -114,6 +115,10 @@ def load(uri):
             if msg.poses:
                 p = msg.poses[0].position
                 d["person"].append((stamp_s(msg.header.stamp), p.x, p.y))
+        elif topic == "/person2_ground_truth":
+            if msg.poses:
+                p = msg.poses[0].position
+                d["person2"].append((stamp_s(msg.header.stamp), p.x, p.y))
         elif topic == "/clock":
             d["clock"].append((t_ns * 1e-9, stamp_s(msg.clock)))
         elif topic == "/person_positions_fused":
@@ -176,6 +181,18 @@ def analyse(path):
     flips = sum(1 for a, b in zip(signs, signs[1:]) if a != b)
 
     closest = min(win, key=lambda r: r[7])
+    # Second walker, if the trial had one: closest approach and pass side.
+    p2 = None
+    if d["person2"]:
+        best = None
+        for r in win:
+            qx, qy = interp(d["person2"], r[0], 2)
+            dist = math.hypot(r[1] - qx, r[2] - qy)
+            if best is None or dist < best[0]:
+                best = (dist, r[0], r[1], r[2], qy)
+        p2 = {"min_centre_m": best[0], "t_min_s": best[1] - t0, "x_at_min": best[2],
+              "side": "left (+y)" if best[3] > best[4] else "right (-y)",
+              "person_y": best[4], "person1_y": closest[6]}
     y0 = win[0][2]
     max_dev = max(abs(r[2] - y0) for r in win)
     commit = next((r for r in win if abs(r[2] - y0) > COMMIT_DEV), None)
@@ -247,6 +264,7 @@ def analyse(path):
         "t_min_s": closest[0] - t0,
         "x_at_min": closest[1],
         "side": "left (+y)" if closest[2] > closest[6] else "right (-y)",
+        "p2": p2,
         "max_dev_m": max_dev,
         "commit_gap_m": commit[7] if commit else None,
         "stopped_s": stopped,
@@ -281,6 +299,14 @@ def report(name, m):
           f"  (t = {m['t_min_s']:.1f} s, robot x = {m['x_at_min']:.2f})")
     print(f"  min surface clearance       {m['min_surface_m']:+.3f} m")
     print(f"  robot passed on its         {m['side']}")
+    if m.get("p2"):
+        q = m["p2"]
+        print(f"  person 2 min centre dist    {q['min_centre_m']:.3f} m"
+              f"  (t = {q['t_min_s']:.1f} s, robot x = {q['x_at_min']:.2f})")
+        print(f"  person 2 passed on its      {q['side']}")
+        split = (m["side"] != q["side"])
+        print(f"  walkers at y                {q['person1_y']:+.2f} / {q['person_y']:+.2f}"
+              f"   robot went {'BETWEEN them' if split else 'around both'}")
     print(f"  max lateral deviation       {m['max_dev_m']:.2f} m")
     print(f"  gap when committed (>{COMMIT_DEV} m) {fmt(m['commit_gap_m'], '.2f', ' m')}")
     print(f"  stopped / spin / reverse    {m['stopped_s']:.1f} / {m['spin_s']:.1f} / "

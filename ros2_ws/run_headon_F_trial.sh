@@ -22,6 +22,8 @@
 #   SHOW_RVIZ=true   open RViz (config/headon_view.rviz) for the trial
 #                                                 (defaults: hardware values)
 #   PERSON_SPEED, PERSON_Y, PERSON_X0, PERSON_X1, GOAL_X, GOAL_Y, GOAL_TIMEOUT
+#   PERSON2_Y=<m> [PERSON2_X0 PERSON2_X1 PERSON2_SPEED]   second walker (person_2);
+#                                  needs a world that has it: WORLD=two_human
 set -e
 
 if [ $# -ne 1 ]; then
@@ -63,6 +65,10 @@ GOAL_X="${GOAL_X:-8.0}"; GOAL_Y="${GOAL_Y:-0.0}"
 PERSON_X0="${PERSON_X0:-9.5}"; PERSON_X1="${PERSON_X1:--2.0}"   # stops short of the dock
 PERSON_Y="${PERSON_Y:-0.0}"
 PERSON_SPEED="${PERSON_SPEED:-1.2}"
+# Second walker: off unless PERSON2_Y is set.
+PERSON2_Y="${PERSON2_Y:-}"
+PERSON2_X0="${PERSON2_X0:-$PERSON_X0}"; PERSON2_X1="${PERSON2_X1:-$PERSON_X1}"
+PERSON2_SPEED="${PERSON2_SPEED:-$PERSON_SPEED}"
 GOAL_TIMEOUT="${GOAL_TIMEOUT:-180}"              # wall seconds
 RVIZ="${RVIZ:-false}"; HEADLESS="${HEADLESS:-true}"
 # Perception range settings; defaults are the hardware values.
@@ -259,6 +265,11 @@ echo "[headon_F] Undocked."
 gz service -s "/world/$WORLD/set_pose" --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean \
   --timeout 3000 --req "name: \"person_1\", position: {x: $PERSON_X0, y: $PERSON_Y, z: 0.0}, orientation: {z: -0.70710678, w: 0.70710678}" \
   > /dev/null || { echo "ERROR: could not place person_1 at the start point" >&2; exit 1; }
+if [ -n "$PERSON2_Y" ]; then
+  gz service -s "/world/$WORLD/set_pose" --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean \
+    --timeout 3000 --req "name: \"person_2\", position: {x: $PERSON2_X0, y: $PERSON2_Y, z: 0.0}, orientation: {z: -0.70710678, w: 0.70710678}" \
+    > /dev/null || { echo "ERROR: could not place person_2 (use WORLD=two_human)" >&2; exit 1; }
+fi
 
 start bridge ros2 run ros_gz_bridge parameter_bridge \
   "/world/${WORLD}/set_pose@ros_gz_interfaces/srv/SetEntityPose"
@@ -331,6 +342,7 @@ Nav2 params file: $CFG
 Map: $MAP
 Robot spawn: ($SPAWN_X, $SPAWN_Y, yaw $SPAWN_YAW) on the dock, then undock   Goal: ($GOAL_X, $GOAL_Y)
 Person: ($PERSON_X0, $PERSON_Y) -> ($PERSON_X1, $PERSON_Y) at $PERSON_SPEED m/s, one-way
+Person 2: ${PERSON2_Y:+($PERSON2_X0, $PERSON2_Y) -> ($PERSON2_X1, $PERSON2_Y) at $PERSON2_SPEED m/s}${PERSON2_Y:+ }$([ -z "$PERSON2_Y" ] && echo none)
 Perception: coast_timeout $COAST_TIMEOUT, ray_coast $RAY_COAST ($RAY_COAST_S s), yolo imgsz $YOLO_IMGSZ, min conf $YOLO_MIN_CONF, max person range $MAX_PERSON_RANGE, lane slope $LANE_SLOPE max $LANE_MAX, pass-side block $PASS_BLOCK, lane half-width $LANE_B, disk radius $DISK_R
 Track dropout test: at "${TRACK_DROPOUT_AT:-off}" m for $TRACK_DROPOUT_S s
 NOTES
@@ -338,7 +350,7 @@ NOTES
 echo "[headon_F] Recording to $BAG/data ..."
 setsid ros2 bag record \
   --qos-profile-overrides-path "$WS/analysis/tf_qos_override.yaml" \
-  --topics /clock /person_ground_truth /sim_ground_truth_pose /odom /amcl_pose /tf /tf_static \
+  --topics /clock /person_ground_truth /person2_ground_truth /sim_ground_truth_pose /odom /amcl_pose /tf /tf_static \
            /plan /scan /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /collision_monitor_state \
            /optimal_trajectory /person_positions_map /camera_ray_clusters \
            /person_positions_fused /predicted_person_positions /predicted_person_cloud \
@@ -365,10 +377,31 @@ for i in $(seq 1 300); do
 done
 if [ -f "$FLAG" ]; then
   echo "[headon_F] Goal accepted - starting the person."
+  # Two walkers: both hold until one shared sim time, so they start together.
+  START_AT=0.0
+  if [ -n "$PERSON2_Y" ]; then
+    START_AT=$(timeout 20 python3 -c "
+import rclpy
+from rosgraph_msgs.msg import Clock
+from rclpy.qos import qos_profile_sensor_data
+rclpy.init(); n = rclpy.create_node('headon_clock_probe'); got = []
+n.create_subscription(Clock, '/clock', lambda m: got.append(m.clock.sec + m.clock.nanosec * 1e-9), qos_profile_sensor_data)
+while not got: rclpy.spin_once(n, timeout_sec=0.2)
+print(f'{got[0] + 3.0:.2f}')
+" 2>/dev/null || echo 0.0)
+    echo "[headon_F] Both walkers start at sim time $START_AT s."
+  fi
   start mover python3 "$MOVER" --ros-args -p use_sim_time:=true \
     -p world_name:="$WORLD" -p model_name:=person_1 \
     -p point_a:="[$PERSON_X0, $PERSON_Y]" -p point_b:="[$PERSON_X1, $PERSON_Y]" \
-    -p speed:="$PERSON_SPEED"
+    -p speed:="$PERSON_SPEED" -p start_sim_time:="$START_AT"
+  if [ -n "$PERSON2_Y" ]; then
+    start mover2 python3 "$MOVER" --ros-args -p use_sim_time:=true \
+      -p world_name:="$WORLD" -p model_name:=person_2 \
+      -p point_a:="[$PERSON2_X0, $PERSON2_Y]" -p point_b:="[$PERSON2_X1, $PERSON2_Y]" \
+      -p speed:="$PERSON2_SPEED" -p ground_truth_topic:=/person2_ground_truth \
+      -p start_sim_time:="$START_AT"
+  fi
 fi
 set +e
 wait "$GOAL_PID"

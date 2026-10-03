@@ -1,0 +1,24 @@
+
+=== headon_stag_near_y0.5_trial1 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                37.3 s
+  path length / mean speed    10.85 m / 0.29 m/s
+  min centre distance         0.840 m  (t = 9.0 s, robot x = -0.58)
+  min surface clearance       +0.401 m
+  robot passed on its         right (-y)
+  person 2 min centre dist    1.416 m  (t = 11.1 s, robot x = -0.02)
+  person 2 passed on its      right (-y)
+  walkers at y                +0.00 / +0.50   robot went around both
+  max lateral deviation       0.92 m
+  gap when committed (>0.2 m) 4.24 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               7
+  gap at robot start          9.14 m
+  person start - robot start  +3.4 s
+  person speed (GT)           1.18 m/s
+  first detection range       7.36 m
+  detection -> KF 0.8 m/s      1.12 s
+  max AMCL error              0.124 m
+  plans published             236
+  real-time factor            0.72

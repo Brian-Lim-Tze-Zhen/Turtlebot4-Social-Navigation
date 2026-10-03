@@ -254,6 +254,9 @@ private:
     int side{1};
     bool side_frozen{false};
     bool ambiguous{false};   // walker may be on the robot's right: no planner block
+    float last_x{0.0f};      // last raw position of this track (lane_jump_reset_)
+    float last_y{0.0f};
+    bool has_last{false};
   };
   std::unordered_map<int, LaneAxis> lane_axes_;
   // While a walker is in its lane, the critic takes the walker to be ON the
@@ -363,6 +366,35 @@ private:
   bool publish_lane_block_{false};
   std::string lane_block_topic_{"/social_critic/lane_block"};
   float lane_block_width_{1.5f};       // m onto the wrong side of the lane
+  // One encounter at a time. With several walkers approaching, each used to
+  // get its own lane, side and planner block; the blocks piled up and the
+  // lane rules contradicted each other (headon_two_pair_trial1: 0.12 m).
+  // When true, only the nearest walker still ahead keeps the lane rule,
+  // no-retreat and block; the rest keep the social-distance cost alone.
+  // A walker must be this much nearer (m) to take over from the current one.
+  bool lane_nearest_only_{false};
+  float lane_nearest_hysteresis_{0.5f};
+  int primary_track_{-1};
+
+  // A track id that jumps this far (m) between updates is a different person:
+  // the tracker reused id 0 for the walker who had been hidden behind the
+  // first one, and the critic kept that walker on the FIRST one's lane, 0.5 m
+  // from where it really was (headon_stag_near_y-0.5_trial1: 0.345 m). 0 = off.
+  float lane_jump_reset_{0.0f};
+
+  // Occlusion: a walker hides whoever is behind it until it has gone by, so
+  // the next person can first appear under 3 m away. While a walker is within
+  // occlusion_slow_gap_ ahead, and for occlusion_slow_after_s_ after it has
+  // passed, forward driving above occlusion_slow_speed_ is penalised over the
+  // first occlusion_slow_horizon_s_ of each rollout. Not applied while another
+  // walker is already tracked further ahead. weight 0 = off.
+  float occlusion_slow_weight_{0.0f};
+  float occlusion_slow_speed_{0.10f};
+  float occlusion_slow_gap_{1.0f};
+  float occlusion_slow_after_s_{1.0f};
+  float occlusion_slow_horizon_s_{1.5f};
+  double slow_until_{-1.0};
+  bool slow_was_active_{false};
   float lane_block_overlap_{0.30f};    // m onto the allowed side (covers the lane)
   float lane_block_robot_gap_{1.0f};   // m of clear lane left in front of the robot
   float lane_block_spacing_{0.05f};

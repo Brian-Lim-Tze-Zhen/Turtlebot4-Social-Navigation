@@ -1,5 +1,6 @@
 #include "social_critic/social_critic.hpp"
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -61,6 +62,14 @@ void SocialCritic::initialize()
   getParam(publish_lane_block_, "publish_lane_block", false);
   getParam(lane_block_topic_, "lane_block_topic", std::string("/social_critic/lane_block"));
   getParam(lane_block_width_, "lane_block_width", 1.5f);
+  getParam(lane_nearest_only_, "lane_nearest_only", false);
+  getParam(lane_nearest_hysteresis_, "lane_nearest_hysteresis", 0.5f);
+  getParam(lane_jump_reset_, "lane_jump_reset", 0.0f);
+  getParam(occlusion_slow_weight_, "occlusion_slow_weight", 0.0f);
+  getParam(occlusion_slow_speed_, "occlusion_slow_speed", 0.10f);
+  getParam(occlusion_slow_gap_, "occlusion_slow_gap", 1.0f);
+  getParam(occlusion_slow_after_s_, "occlusion_slow_after_s", 1.0f);
+  getParam(occlusion_slow_horizon_s_, "occlusion_slow_horizon_s", 1.5f);
   getParam(lane_block_overlap_, "lane_block_overlap", 0.30f);
   getParam(lane_block_robot_gap_, "lane_block_robot_gap", 1.0f);
   getParam(marker_topic_, "marker_topic", std::string("/social_critic/lane_markers"));
@@ -423,6 +432,7 @@ void SocialCritic::score(CriticData & data)
   // is far steadier than the KF heading.
   const float robot_x0 = static_cast<float>(data.state.pose.pose.position.x);
   const float robot_y0 = static_cast<float>(data.state.pose.pose.position.y);
+  bool slow_active = false;   // see occlusion_slow_weight_
   if (pass_side_weight_ > 0.0f || no_retreat_weight_ > 0.0f) {
     const float rx0 = static_cast<float>(data.state.pose.pose.position.x);
     const float ry0 = static_cast<float>(data.state.pose.pose.position.y);
@@ -437,6 +447,15 @@ void SocialCritic::score(CriticData & data)
       t.ux = ex / d;
       t.uy = ey / d;
       t.closing = (t.vx * t.ux + t.vy * t.uy) > pass_side_min_closing_;
+    }
+
+    // The estimates as received, before a walker is put on its lane below:
+    // a walker that loses the lane rule to a nearer one (lane_nearest_only_)
+    // is scored at its raw position again.
+    std::vector<std::array<float, 4>> raw;
+    raw.reserve(targets.size());
+    for (const auto & t : targets) {
+      raw.push_back({t.x, t.y, t.vx, t.vy});
     }
 
     // Freeze the lane axis per track the first time it closes on the robot,
@@ -481,6 +500,23 @@ void SocialCritic::score(CriticData & data)
         continue;
       }
       auto it = lane_axes_.find(t.track_id);
+      if (it != lane_axes_.end() && lane_jump_reset_ > 0.0f && it->second.has_last &&
+        !t.coasted)
+      {
+        // The same id on a different person (see lane_jump_reset_): forget
+        // the old lane, so this one is handled as a newly seen walker.
+        const float jx = t.x - it->second.last_x;
+        const float jy = t.y - it->second.last_y;
+        const float jump = std::sqrt(jx * jx + jy * jy);
+        if (jump > lane_jump_reset_) {
+          RCLCPP_INFO(
+            logger_,
+            "SocialCritic: track %d jumped %.2f m - a different person, lane reset",
+            t.track_id, jump);
+          lane_axes_.erase(it);
+          it = lane_axes_.end();
+        }
+      }
       if (it == lane_axes_.end() && lane_carry_radius_ > 0.0f && !t.coasted) {
         // A new id: is it the walker of a lane whose own track has gone
         // quiet? (see lane_carry_radius_)
@@ -558,6 +594,9 @@ void SocialCritic::score(CriticData & data)
         it->second = newLane(t, false);
       }
       it->second.stamp = now_s;
+      it->second.last_x = t.x;   // still the raw estimate here
+      it->second.last_y = t.y;
+      it->second.has_last = true;
       if (it->second.first_seen < 0.0) {
         continue;
       }
@@ -655,6 +694,100 @@ void SocialCritic::score(CriticData & data)
         ++it;
       } else {
         it = superseded_.erase(it);
+      }
+    }
+
+    // One encounter at a time (see lane_nearest_only_): the lane rule, the
+    // no-retreat term and the planner block apply to the nearest walker that
+    // is still ahead. The others keep only the social-distance cost until
+    // the nearest one has passed.
+    if (lane_nearest_only_) {
+      int best = -1;
+      int cur = -1;
+      float best_gap = std::numeric_limits<float>::max();
+      float cur_gap = 0.0f;
+      for (size_t k = 0; k < targets.size(); ++k) {
+        const Target & t = targets[k];
+        if (!t.lane || t.weight_scale <= 0.0f) {
+          continue;
+        }
+        // Along the lane, from the walker to the robot: > 0 is still ahead.
+        const float gap = (robot_x0 - t.x) * t.lx + (robot_y0 - t.y) * t.ly;
+        if (gap < -pass_side_behind_) {
+          continue;
+        }
+        if (t.track_id == primary_track_) {
+          cur = static_cast<int>(k);
+          cur_gap = gap;
+        }
+        if (gap < best_gap) {
+          best = static_cast<int>(k);
+          best_gap = gap;
+        }
+      }
+      // Hold on to the current one unless another is clearly nearer.
+      if (cur >= 0 && best != cur && cur_gap - best_gap < lane_nearest_hysteresis_) {
+        best = cur;
+        best_gap = cur_gap;
+      }
+      const int best_id = best >= 0 ? targets[best].track_id : -1;
+      if (best_id != primary_track_) {
+        if (best_id >= 0) {
+          RCLCPP_INFO(
+            logger_,
+            "SocialCritic: lane rule now follows track %d (%.2f m ahead), robot keeps %s",
+            best_id, best_gap, targets[best].side > 0 ? "RIGHT" : "LEFT");
+        }
+        primary_track_ = best_id;
+      }
+      for (size_t k = 0; k < targets.size(); ++k) {
+        Target & t = targets[k];
+        if (static_cast<int>(k) == best || !t.lane) {
+          continue;
+        }
+        const float gap = (robot_x0 - t.x) * t.lx + (robot_y0 - t.y) * t.ly;
+        if (gap < -pass_side_behind_) {
+          continue;   // already passed: the rule no longer reaches it
+        }
+        t.lane = false;
+        t.closing = false;
+        t.block_ok = false;
+        t.x = raw[k][0];
+        t.y = raw[k][1];
+        t.vx = raw[k][2];
+        t.vy = raw[k][3];
+      }
+    }
+
+    // Slow down while a walker goes by (see occlusion_slow_weight_).
+    if (occlusion_slow_weight_ > 0.0f) {
+      bool passing = false;
+      bool other_ahead = false;
+      for (const auto & t : targets) {
+        if (!t.lane || t.weight_scale <= 0.0f) {
+          continue;
+        }
+        const float gap = (robot_x0 - t.x) * t.lx + (robot_y0 - t.y) * t.ly;
+        if (gap > -0.3f && gap < occlusion_slow_gap_) {
+          passing = true;
+        } else if (gap >= occlusion_slow_gap_) {
+          other_ahead = true;
+        }
+      }
+      if (now_s + 5.0 < slow_until_) {
+        slow_until_ = -1.0;   // clock went back (new sim run)
+      }
+      if (passing) {
+        slow_until_ = now_s + occlusion_slow_after_s_;
+      }
+      // A walker already tracked further ahead needs the robot's full speed
+      // to get to its strip; what it hides is the next pass's concern.
+      slow_active = now_s < slow_until_ && !other_ahead;
+      if (slow_active != slow_was_active_) {
+        RCLCPP_INFO(
+          logger_, "SocialCritic: occlusion slow-down %s",
+          slow_active ? "ON (a walker is going by, the view behind it is blocked)" : "off");
+        slow_was_active_ = slow_active;
       }
     }
   }
@@ -798,6 +931,30 @@ void SocialCritic::score(CriticData & data)
         }
         traj_cost += no_retreat_weight_ * t.weight_scale * retreat;
       }
+    }
+
+    if (slow_active && time_steps > 0) {
+      // Distance driven beyond occlusion_slow_speed_ over the first
+      // occlusion_slow_horizon_s_ of the rollout. Turning is not limited.
+      const float cap = occlusion_slow_speed_ * data.model_dt * static_cast<float>(step);
+      float excess = 0.0f;
+      float px_prev = robot_x0;
+      float py_prev = robot_y0;
+      for (size_t j = 0; j < time_steps; j += static_cast<size_t>(step)) {
+        if (static_cast<float>(j) * data.model_dt > occlusion_slow_horizon_s_) {
+          break;
+        }
+        const float qx = data.trajectories.x(i, j);
+        const float qy = data.trajectories.y(i, j);
+        const float d = std::sqrt(
+          (qx - px_prev) * (qx - px_prev) + (qy - py_prev) * (qy - py_prev));
+        if (j > 0 && d > cap) {
+          excess += d - cap;
+        }
+        px_prev = qx;
+        py_prev = qy;
+      }
+      traj_cost += occlusion_slow_weight_ * excess;
     }
 
     data.costs(i) += traj_cost;

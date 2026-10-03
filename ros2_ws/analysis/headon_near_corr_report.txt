@@ -1,0 +1,61 @@
+
+=== headon_near_corr_trial1 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                37.3 s
+  path length / mean speed    10.82 m / 0.29 m/s
+  min centre distance         0.838 m  (t = 9.2 s, robot x = -0.51)
+  min surface clearance       +0.399 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.90 m
+  gap when committed (>0.2 m) 4.17 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               8
+  gap at robot start          12.08 m
+  person start - robot start  +1.1 s
+  person speed (GT)           1.19 m/s
+  first detection range       6.89 m
+  detection -> KF 0.8 m/s      1.09 s
+  max AMCL error              0.193 m
+  plans published             233
+  real-time factor            0.73
+
+=== headon_near_corr_trial2 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                37.3 s
+  path length / mean speed    10.82 m / 0.29 m/s
+  min centre distance         0.814 m  (t = 9.6 s, robot x = -0.41)
+  min surface clearance       +0.375 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.88 m
+  gap when committed (>0.2 m) 4.24 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               9
+  gap at robot start          12.15 m
+  person start - robot start  +1.5 s
+  person speed (GT)           1.19 m/s
+  first detection range       6.99 m
+  detection -> KF 0.8 m/s      1.00 s
+  max AMCL error              0.281 m
+  plans published             234
+  real-time factor            0.73
+
+=== Aggregate: goal reached in 2 / 2 trials ===
+  metric                     mean       sd      min      max   n
+  time_s                   37.287    0.013   37.278   37.296   2
+  min_centre_m              0.826    0.017    0.814    0.838   2
+  min_surface_m             0.387    0.017    0.375    0.399   2
+  max_dev_m                 0.888    0.011    0.880    0.895   2
+  commit_gap_m              4.203    0.046    4.171    4.235   2
+  stopped_s                 0.000    0.000    0.000    0.000   2
+  spin_s                    0.000    0.000    0.000    0.000   2
+  reverse_s                 0.000    0.000    0.000    0.000   2
+  wz_flips                  8.500    0.707    8.000    9.000   2
+  mean_vx                   0.290    0.000    0.290    0.290   2
+  first_det_range_m         6.937    0.070    6.887    6.987   2
+  det_to_kf_s               1.046    0.063    1.001    1.091   2
+  amcl_err_m                0.237    0.063    0.193    0.281   2
+  person_speed              1.189    0.003    1.187    1.191   2
+  rtf                       0.728    0.001    0.727    0.729   2
+  pass side: right (-y) x2

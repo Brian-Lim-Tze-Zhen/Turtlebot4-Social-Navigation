@@ -67,6 +67,14 @@ class MovePersonOneWay(Node):
         # so the two interleave and every person's identity shifts
         # between messages. Nothing errors; the metrics are simply wrong.
         self.declare_parameter("publish_ground_truth", True)
+        # A second walker publishes its own topic (run_headon_F_trial.sh,
+        # PERSON2_Y), so the two never interleave on one PoseArray.
+        self.declare_parameter("ground_truth_topic", "/person_ground_truth")
+        # Hold at point_a until this sim time (s); 0 = start at once. Two
+        # walkers given the same value start together however long each
+        # node took to come up (seen: 2.9 s apart, the rear walker caught
+        # up with the front one).
+        self.declare_parameter("start_sim_time", 0.0)
 
         # Yaw offset between the mesh's own forward axis and the
         # direction of travel. The +pi/2 baked in below was measured in
@@ -114,10 +122,11 @@ class MovePersonOneWay(Node):
         self.finished = False
 
         self.publish_gt = self.get_parameter("publish_ground_truth").value
+        self.start_sim_time = float(self.get_parameter("start_sim_time").value)
         self.mesh_yaw_offset = float(
             self.get_parameter("mesh_yaw_offset").value)
         self.ground_truth_pub = self.create_publisher(
-            PoseArray, "/person_ground_truth", 10
+            PoseArray, self.get_parameter("ground_truth_topic").value, 10
         )
         if not self.publish_gt:
             self.get_logger().info(
@@ -142,6 +151,11 @@ class MovePersonOneWay(Node):
         # /person_ground_truth for the whole run.
         if not hasattr(self, "_first_tick_done"):
             self._first_tick_done = True
+            self.last_time = now
+            self.publish_ground_truth()
+            return
+
+        if now.nanoseconds * 1e-9 < self.start_sim_time:
             self.last_time = now
             self.publish_ground_truth()
             return
