@@ -199,7 +199,7 @@ controller_server:
         # Slow to 0.10 m/s while a walker goes by and for 1 s after: someone
         # may be hidden behind it (see social_critic.hpp).
         occlusion_slow_weight: 300.0
-        occlusion_slow_speed: 0.10
+        occlusion_slow_speed: 0.15   # 0.10 dipped under the stopped threshold for 0.3 s in one run
         occlusion_slow_gap: 1.0
         occlusion_slow_after_s: 1.0
         lane_block_overlap: 0.30

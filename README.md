@@ -458,7 +458,10 @@ Every new parameter is off by default, so the other conditions are unchanged.
 | No retreat | `no_retreat_weight` 300, `vx_min` 0.0 | Penalises rollout steps that lose ground, only while the walker is still ahead. |
 | Side selection | `pass_side_auto`, `side_decision_s` 0.6, `side_switch_offset` 0.10, `side_commit_offset` 0.06 | Keeps right by default; goes left if the walker reads more than 0.10 m to the right. The side locks once the robot is 6 cm off the lane. |
 | Lane carry-over | `lane_carry_radius` 0.6, `lane_carry_along` 2.0 | A re-acquired track with a new id inherits the old lane and side. |
-| Keep-side block | `publish_lane_block` | Publishes `/social_critic/lane_block`, marked in the **global** costmap only, so NavFn plans on the same side as the controller. |
+| Keep-side block | `publish_lane_block`, `lane_block_width` 0.4 | Publishes `/social_critic/lane_block`, marked in the **global** costmap only, so NavFn plans on the same side as the controller. |
+| Nearest first | `lane_nearest_only` | With several walkers, only the nearest one still ahead keeps the lane rule, no-retreat and block. |
+| Slow-down at a pass | `occlusion_slow_weight` 300, `occlusion_slow_speed` 0.15 | Holds about 0.15 m/s while a walker goes by and 1 s after, because someone may be hidden behind them. |
+| Track-jump handling | `lane_jump_reset` 1.5 | A track id that jumps more than 1.5 m is a different person. They get a lane parallel to the previous one, through their own position; the side is the one the robot is already on. |
 | Markers | `publish_markers` | Lane and target strip on `/social_critic/lane_markers` for RViz. |
 
 Other changes in the config: `wz_std` 0.7 (above about 0.9 the real robot
@@ -475,6 +478,8 @@ BackUp and keeps the last plan when a replan fails.
     LANE_B=0.15 DISK_R=0.30 LANE_SLOPE=0.0 LANE_MAX=0.3 \
     SHOW_RVIZ=true HEADLESS=false ./run_headon_F_trial.sh <bag_name>
 
+A second walker: `WORLD=two_human PERSON2_Y=<m>` (with `PERSON2_X0`,
+`PERSON2_X1`); both walkers start at the same sim time.
 `PERSON_Y` moves the walker sideways, `WORLD=empty_human` runs in open
 space, `TRACK_DROPOUT_AT=<m>` loses the track at that range and returns it
 under a new id. `run_headon_F_batch.sh <prefix> <n> ENV=val…` runs n trials
@@ -482,6 +487,11 @@ and aggregates. `SHOW_RVIZ=false HEADLESS=true` runs without windows.
 `social_nav2_headon_F_hwreq_sim.yaml` is the same config without the block.
 
 ### Results (simulation, 3 Oct 2026)
+
+The n = 5 table below was measured with a 1.5 m block and before the
+nearest-first, slow-down and track-jump rules were added. The current
+config has not had its own n = 5 run; its single-walker runs are listed
+under "Current config" further down.
 
 Centreline walker at 1.2 m/s, `hwreq_block` config, n = 5
 (`analysis/headon_hwreq_z5_corr_report.txt`):
@@ -510,6 +520,53 @@ Other cases, same config unless noted (single runs or small n):
 | Without the block (`hwreq`) | 5 | right | 0.854 ± 0.037 m |
 | Long range (YOLO 640 px, seen at 11 m, `avoid_gentle`) | 5 | right | 0.879 ± 0.021 m |
 
+Block width, centred walker (the block only needs to make the wrong side
+the longer way round; all sizes steered NavFn equally, 0 – 6 of about 30
+plans per run on the wrong side):
+
+| Block width | Corridor | Open space |
+|---|---|---|
+| 1.5 m | 0.834 ± 0.036 m (n = 5) | 0.811 m (n = 1) |
+| 0.8 m | 0.824, 0.922, 0.894 m | 0.794, 0.799, 0.899 m |
+| 0.4 m (current) | 0.843, 0.783 m | 0.766, 0.757 m |
+
+Current config (0.4 m block, nearest first, slow-down, track-jump
+handling), one centred walker in the corridor:
+
+| Slow speed | Runs | Pass side | Min centre distance | Stopped time |
+|---|---|---|---|---|
+| 0.10 m/s | 2 | right | 0.853, 0.857 m | 0.0, 0.3 s |
+| 0.15 m/s (current) | 3 | left | 0.748, 0.749, 0.759 m | 0.0 s |
+
+The three left passes were caused by the first reading of the walker's
+sideways position (−0.25, −0.33, −0.14 m for a centred walker), not by the
+slow speed. The slow-down adds about 1.5 s to the time to goal.
+
+### Two walkers (open space, 3 – 4 Oct 2026)
+
+Each cell is the minimum centre distance to walker A / walker B.
+
+| Case | Runs | Result | Verdict |
+|---|---|---|---|
+| Single file, B 1.5 m behind A on the same line | 1 | 0.876 / 0.925 m | works |
+| Staggered, B 3 m behind A and 0.5 m to the robot's left | 1 | 0.840 / 1.416 m | works |
+| Staggered, B 3 m behind A and 0.5 m to the robot's right (B hidden behind A) | 4 | A 0.787 – 0.865 m, B 0.393 – 0.721 m | under target |
+| Side by side, 0.7 m apart | 1 | 0.818 / 0.120 m | fails |
+
+Hidden walker: B is only about 4° off A's direction and the camera cannot
+separate them, so B is first tracked at about 3 m, after A has gone by. The
+tracker reuses A's id for B. Development of that case:
+
+| Version | Distance to B | Notes |
+|---|---|---|
+| B kept on A's lane (same id) | 0.345 m | 0.7 s reversing |
+| Lane reset + slow-down | 0.430, 0.570 m | |
+| Lane from the robot towards B, side from the path direction | 0.616, 0.248 m | wrong side once, 2.3 s spinning |
+| Parallel lane through B (current) | 0.721, 0.592, 0.393, 0.519 m | no stop, spin or reverse |
+
+About 2 s remain once B is seen; the robot cannot move the missing 0.3 –
+0.4 m sideways in that time. This is accepted as a limit.
+
 **Limits**
 
 - The margin over 0.8 m is thin: the lowest corridor run was 0.804 m and
@@ -518,7 +575,17 @@ Other cases, same config unless noted (single runs or small n):
   a centred walker is sometimes passed on the left.
 - A walker hugging the wall was not detected in one earlier run (YOLO
   confidence 0.16 – 0.41, below the 0.45 threshold).
-- One person only. A side-by-side pair could be split down the middle.
+- One oncoming person, or several in single file. Two people side by side
+  get contradictory lane rules and the robot ends up between them
+  (0.12 m). Grouping them into one lane is designed but not built: 1.6 m
+  or more apart, pass between; closer, take whichever of "between" and
+  "outside" leaves more room, and slow down if that is under 0.8 m.
+- A person hidden behind another is passed at about 0.4 – 0.7 m. The
+  LiDAR does see the hidden person's legs, but LiDAR-only detection was
+  ruled out because walls read as moving on the real robot.
+- The pass side for a centred walker follows a first reading that is good
+  to about ±0.23 m, so it can be left or right. Left passes were about
+  0.1 m tighter (0.75 m); the cause is not known.
 - The sim walker goes straight at 1.2 m/s and never yields. The hardware
   bags of 25 Sep show 1.36 – 1.41 m/s and a lost track at the turn-around
   in 7 of 11 runs.

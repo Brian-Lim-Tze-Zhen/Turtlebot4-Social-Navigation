@@ -508,11 +508,38 @@ void SocialCritic::score(CriticData & data)
         const float jx = t.x - it->second.last_x;
         const float jy = t.y - it->second.last_y;
         const float jump = std::sqrt(jx * jx + jy * jy);
-        if (jump > lane_jump_reset_) {
+        if (jump > lane_jump_reset_ && it->second.first_seen >= 0.0) {
+          // This person was hidden behind the previous one and is first seen
+          // close. Assume it walks PARALLEL to the previous lane: keep that
+          // direction and put the line through where the person is now. The
+          // usual lane (from the robot toward the person) and the side read
+          // off the bent global path were both wrong at 3 m: the robot was
+          // told to cross in front of the walker
+          // (headon_slow15_stag_y-0.5_trial2: 0.248 m, 2.3 s spinning).
+          LaneAxis a = it->second;
+          a.ax = t.x;
+          a.ay = t.y;
+          a.stamp = now_s;
+          a.first_seen = now_s;
+          a.frozen_at = now_s;
+          a.provisional = true;
+          a.offset_sum = 0.0;
+          a.offset_n = 0;
+          a.ambiguous = false;
+          // q > 0: the robot is on this walker's right (its own LEFT).
+          const float q_robot = (robot_x0 - a.ax) * a.uy - (robot_y0 - a.ay) * a.ux;
+          a.side_frozen = std::fabs(q_robot) > 0.06f;
+          if (a.side_frozen) {
+            a.side = q_robot > 0.0f ? -1 : 1;
+          }
+          it->second = a;
           RCLCPP_INFO(
             logger_,
-            "SocialCritic: track %d jumped %.2f m - a different person, lane reset",
-            t.track_id, jump);
+            "SocialCritic: track %d jumped %.2f m - a different person; parallel "
+            "lane through it, robot is %.2f m to its %s, keeps %s",
+            t.track_id, jump, std::fabs(q_robot), q_robot > 0.0f ? "right" : "left",
+            a.side_frozen ? (a.side > 0 ? "RIGHT" : "LEFT") : "(undecided)");
+        } else if (jump > lane_jump_reset_) {
           lane_axes_.erase(it);
           it = lane_axes_.end();
         }

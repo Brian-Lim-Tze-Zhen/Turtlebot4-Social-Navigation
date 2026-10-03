@@ -1,0 +1,67 @@
+
+=== headon_slow15_stag_y-0.5_trial1 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                39.9 s
+  path length / mean speed    10.99 m / 0.28 m/s
+  min centre distance         0.833 m  (t = 9.3 s, robot x = -0.56)
+  min surface clearance       +0.394 m
+  robot passed on its         right (-y)
+  person 2 min centre dist    0.616 m  (t = 11.6 s, robot x = -0.18)
+  person 2 passed on its      right (-y)
+  walkers at y                +0.00 / -0.50   robot went around both
+  max lateral deviation       1.21 m
+  gap when committed (>0.2 m) 4.69 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               10
+  gap at robot start          9.15 m
+  person start - robot start  +3.7 s
+  person speed (GT)           1.18 m/s
+  first detection range       7.37 m
+  detection -> KF 0.8 m/s      0.99 s
+  max AMCL error              0.134 m
+  plans published             257
+  real-time factor            0.70
+
+=== headon_slow15_stag_y-0.5_trial2 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                45.1 s
+  path length / mean speed    11.21 m / 0.25 m/s
+  min centre distance         0.801 m  (t = 9.3 s, robot x = -0.46)
+  min surface clearance       +0.362 m
+  robot passed on its         right (-y)
+  person 2 min centre dist    0.248 m  (t = 11.6 s, robot x = -0.23)
+  person 2 passed on its      right (-y)
+  walkers at y                +0.00 / -0.50   robot went around both
+  max lateral deviation       0.83 m
+  gap when committed (>0.2 m) 3.81 m
+  stopped / spin / reverse    0.0 / 2.3 / 0.7 s
+  wz sign flips               10
+  gap at robot start          8.92 m
+  person start - robot start  +3.9 s
+  person speed (GT)           1.18 m/s
+  first detection range       6.98 m
+  detection -> KF 0.8 m/s      0.89 s
+  max AMCL error              0.150 m
+  plans published             290
+  real-time factor            0.70
+
+=== Aggregate: goal reached in 2 / 2 trials ===
+  metric                     mean       sd      min      max   n
+  time_s                   42.507    3.678   39.906   45.108   2
+  min_centre_m              0.817    0.023    0.801    0.833   2
+  min_surface_m             0.378    0.023    0.362    0.394   2
+  max_dev_m                 1.018    0.268    0.829    1.208   2
+  commit_gap_m              4.247    0.622    3.808    4.687   2
+  stopped_s                 0.000    0.000    0.000    0.000   2
+  spin_s                    1.152    1.629    0.000    2.304   2
+  reverse_s                 0.333    0.471    0.000    0.666   2
+  wz_flips                 10.000    0.000   10.000   10.000   2
+  mean_vx                   0.262    0.019    0.249    0.275   2
+  first_det_range_m         7.177    0.277    6.981    7.372   2
+  det_to_kf_s               0.941    0.067    0.894    0.989   2
+  amcl_err_m                0.142    0.011    0.134    0.150   2
+  person_speed              1.181    0.001    1.180    1.182   2
+  rtf                       0.702    0.003    0.700    0.704   2
+  pass side: right (-y) x2
