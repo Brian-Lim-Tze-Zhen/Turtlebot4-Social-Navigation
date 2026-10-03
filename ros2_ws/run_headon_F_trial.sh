@@ -71,6 +71,19 @@ PERSON2_X0="${PERSON2_X0:-$PERSON_X0}"; PERSON2_X1="${PERSON2_X1:-$PERSON_X1}"
 PERSON2_SPEED="${PERSON2_SPEED:-$PERSON_SPEED}"
 GOAL_TIMEOUT="${GOAL_TIMEOUT:-180}"              # wall seconds
 RVIZ="${RVIZ:-false}"; HEADLESS="${HEADLESS:-true}"
+# The avoidance configs (*hwreq*) use a body disk for the person cloud and
+# LiDAR following when the camera loses the person. The forward ellipse only
+# ever appears for a walking person, i.e. in this scenario, and at hardware
+# detection range it trapped the robot mid-crossing; the SocialCritic lane
+# rule does its job there. Any other config keeps the hardware values, so the
+# baseline (ellipse) is still reproduced. Each can be overridden as before.
+case "$(basename "$CFG")" in
+  *hwreq*)
+    LANE_SLOPE="${LANE_SLOPE:-0.0}"; LANE_MAX="${LANE_MAX:-0.3}"
+    LANE_B="${LANE_B:-0.15}"; DISK_R="${DISK_R:-0.30}"
+    RAY_COAST="${RAY_COAST:-true}"
+    ;;
+esac
 # Perception range settings; defaults are the hardware values.
 YOLO_IMGSZ="${YOLO_IMGSZ:-320}"; YOLO_MIN_CONF="${YOLO_MIN_CONF:-0.45}"
 MAX_PERSON_RANGE="${MAX_PERSON_RANGE:-8.0}"
