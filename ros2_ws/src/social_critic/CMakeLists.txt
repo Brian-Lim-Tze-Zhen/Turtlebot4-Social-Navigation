@@ -11,6 +11,8 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -29,6 +31,8 @@ ament_target_dependencies(social_critic
   pluginlib
   std_msgs
   geometry_msgs
+  visualization_msgs
+  sensor_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -50,7 +54,7 @@ install(DIRECTORY include/
 ament_export_include_directories(include)
 ament_export_libraries(social_critic)
 ament_export_dependencies(
-  rclcpp rclcpp_lifecycle pluginlib std_msgs geometry_msgs
+  rclcpp rclcpp_lifecycle pluginlib std_msgs geometry_msgs visualization_msgs sensor_msgs
   tf2 tf2_ros tf2_geometry_msgs nav2_costmap_2d nav2_mppi_controller)
 
 ament_package()

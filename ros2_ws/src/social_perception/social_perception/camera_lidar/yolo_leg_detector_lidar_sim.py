@@ -51,7 +51,19 @@ class YoloByteTrackPositionNode(Node):
         if not os.path.isdir(export_path):
             self.get_logger().info("OpenVINO export not found, exporting once...")
             YOLO("yolov8n-pose.pt").export(format="openvino", imgsz=320)
-        self.model = YOLO(export_path)
+        # SIM (head-on avoidance): inference size and publish gate as
+        # parameters. Defaults are the hardware values. At imgsz 320 a
+        # walker is first published at ~7.5 m, which leaves the robot
+        # (0.31 m/s) too little time to clear a 1.2 m/s head-on walker.
+        # Any other size runs the PyTorch weights, because the OpenVINO
+        # export is fixed at 320.
+        self.declare_parameter("imgsz", 320)
+        self.declare_parameter("min_publish_conf", 0.45)
+        self.imgsz = int(self.get_parameter("imgsz").value)
+        if self.imgsz == 320:
+            self.model = YOLO(export_path)
+        else:
+            self.model = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "yolov8n-pose.pt"))
 
         # COCO keypoint indices: 13=L knee,14=R knee,15=L ankle,16=R ankle
         self.leg_kpt_idx = [13, 14, 15, 16]
@@ -68,7 +80,7 @@ class YoloByteTrackPositionNode(Node):
         # CAMERA_ONLY_GRACE_PERIOD and the bearing blacklist in
         # identity_fusion_node_lidar.py, both verified working.
         # Root fix remains mounting geometry: tilt the camera up.
-        self.min_publish_conf = 0.45
+        self.min_publish_conf = float(self.get_parameter("min_publish_conf").value)
 
         self.frame_count = 0
         self.process_every_n_frames = 2
@@ -96,6 +108,7 @@ class YoloByteTrackPositionNode(Node):
 
         self.get_logger().info("YOLO + ByteTrack leg-keypoint node started (no depth/TF - LIDAR fusion handles range)")
         self.get_logger().info(f"RGB topic: {self.rgb_topic}")
+        self.get_logger().info(f"imgsz {self.imgsz}, min_publish_conf {self.min_publish_conf}")
         self.get_logger().info(f"Publishing: /person_positions_map")
 
     def rgb_callback(self, msg):
@@ -120,7 +133,7 @@ class YoloByteTrackPositionNode(Node):
             tracker="bytetrack.yaml",
             classes=[0],
             conf=0.15,
-            imgsz=320,
+            imgsz=self.imgsz,
             device="cpu",
             verbose=False
         )

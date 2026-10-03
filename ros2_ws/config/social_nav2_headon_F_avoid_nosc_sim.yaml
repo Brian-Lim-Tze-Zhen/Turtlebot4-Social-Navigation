@@ -5,7 +5,7 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     bt_loop_duration: 10
-    default_server_timeout: 20
+    default_server_timeout: 200   # HEAD-ON AVOID: 20 -> 200 ms; at 20 the BT timed out on follow_path under load and aborted at start
     wait_for_service_timeout: 5000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose"]
@@ -73,7 +73,9 @@ controller_server:
       # 2 Oct 2026 (synced from hardware): 1.5 -> 0.7. Main wobble source.
       # Early detour is the global path's job (person cloud is in the
       # global costmap), not random angular sampling.
-      wz_std: 0.7
+      # HEAD-ON AVOID: 0.7 -> 1.2. At 0.7 the robot stopped and took ~2 s to
+      # turn 90 deg before it could move aside (bag headon_avoid_v2).
+      wz_std: 1.2
       # TONIGHT FIX (restored lost tuning): vx_max 0.5 -> 0.26.
       # Must match velocity_smoother max (0.26). At 0.5 MPPI planned
       # escape maneuvers at speeds the smoother silently clipped,
@@ -119,11 +121,15 @@ controller_server:
         consider_footprint: true      # 必须开启，否则按机器人中心点算，不是表面
         critical_cost: 300.0
       SocialCritic:
-        topic: /person_positions_fused
-        enabled: true
+        # HEAD-ON AVOID: read the KF output, which carries velocity.
+        # /person_positions_fused has vx = vy = 0, so the time-aware
+        # propagation below treated a 1.2 m/s walker as standing still and
+        # the critic only acted once the person was already within reach.
+        topic: /predicted_person_positions
+        enabled: false   # TEST: plan + person cloud only (SocialCritic fought the keep-right plan, headon_avoid_v6)
         cost_power: 1
-        cost_weight: 12.0
-        social_distance: 0.94
+        cost_weight: 20.0
+        social_distance: 1.10   # HEAD-ON AVOID: target >= 0.8 m centre distance
         group_aware: true
         narrow_social_distance: 0.60
         group_topic: "/social_groups"
@@ -138,7 +144,7 @@ controller_server:
         min_coast_speed: 0.15
         max_coast_speed: 2.5
         time_aware: true          # 新增
-        max_prediction_time: 3.0  # 新增
+        max_prediction_time: 6.0  # HEAD-ON AVOID: 3.0 -> 6.0, the full 120 x 0.05 s rollout
       GoalCritic:
         enabled: true
         cost_power: 1

@@ -313,6 +313,114 @@ avoids the o-space at +0.41 m surface clearance. Without room, it passes
 through the conversation at a reduced but non-contact +0.28 m. It never
 stops in either case.
 
+## Ablation F — head-on, corridor (hardware pipeline)
+
+A single person walks straight at the robot in a corridor, using the same
+perception pipeline and tuning as the real TurtleBot4 (camera-ray
+perception + the F keepout config, as run on hardware on 2 Oct 2026).
+
+### Head-on test world
+
+`corridor_headon.sdf`: a 2.5 m corridor (inner walls at y = ±1.25 m,
+x −4.45 … 10.45). The robot spawns **on the dock** at (−3, 0) with yaw
+180°, undocks (backs off and turns to face +x), and drives to the goal
+(8, 0). `person_1` walks one-way from (9.5, 0) to (−2.0, 0) at 1.2 m/s on
+the corridor centreline, so it is a true collision course. The person and
+the goal are started together, about 12 m apart.
+
+The static map (`maps/corridor_headon_aligned.{pgm,yaml}`) is generated
+from the SDF wall geometry by
+`simulation_models/worlds/make_corridor_headon_map.py`. The older SLAM'd
+`maps/corridor_headon.yaml` is shifted about 3 m in x from the Gazebo
+frame, so ground truth does not line up with it.
+
+### What was synced from hardware
+
+The sim ports were brought up to the hardware repo's 2 Oct state. Only the
+sim adaptations differ (no `/turtlebot4` namespace, raw `Image`, Gazebo
+camera intrinsics and 640 px image width).
+
+1. `camera_ray_person_node_sim.py`: motion release for a stuck range lock.
+2. `camera_ray_identity_node_sim.py`: stationary hold (`lidar_hold`).
+3. `human_kf_predictor_lidar.py`: `q_pos` 0.05 → 0.02, `q_vel` 0.05 → 0.15,
+   `lidar_hold` handling.
+4. `predicted_person_cloud_node_lidar.py`: `GROUP_MEMBER_RADIUS` 0.50 → 0.70,
+   `side_by_side` members deferred to the zone node.
+5. `config/social_nav2_ablation_F_socialzone_sim.yaml`: `time_steps`
+   200 → 120, `wz_std` 1.5 → 0.7, PathFollowCritic weight 4 → 6, global
+   `inflation_radius` 0.25 → 0.35.
+
+Not synced: the SocialCritic group logic, the group detector and the zone
+node, which a lone walker does not exercise. Item 5 also applies to any new
+conversation trials; the wide and narrow results above were recorded before it.
+
+### Running a head-on trial
+
+One command per trial, inside the container. It does a fresh headless
+launch, sets `/initialpose`, undocks, starts perception and the zone stack,
+snapshots provenance, records the bag, starts the person and sends the
+goal together, and tears everything down at the goal result:
+
+    ./run_headon_F_trial.sh headon_F_corridor_trial1
+
+`RVIZ=true HEADLESS=false` shows the run. `PERSON_SPEED`, `PERSON_Y`,
+`PERSON_X0`, `PERSON_X1`, `GOAL_X` and `GOAL_Y` override the protocol.
+
+Analyse one or more trials (per-trial report plus mean ± SD):
+
+    python3 /root/thesis_social_navigation_ws/analysis/analyse_headon_F.py "/root/thesis_social_navigation_ws/bags/headon_F_corridor_trial*" | tee /root/thesis_social_navigation_ws/analysis/headon_F_corridor_report.txt
+
+Metric definitions match `analyse_F_narrow.py`, except that the person's
+position comes from `/person_ground_truth` because it moves.
+
+### Results (simulation, 2–3 Oct 2026)
+
+Centreline head-on at 1.2 m/s, n = 5 protocol trials:
+
+| Metric | Mean ± SD | Range |
+|---|---|---|
+| Goal reached | 5 / 5 | — |
+| Time to goal | 42.9 ± 1.9 s | 40.6 – 44.8 |
+| Min centre distance (GT) | 0.058 ± 0.068 m | 0.008 – 0.177 |
+| Min surface clearance (GT) | −0.381 ± 0.068 m | −0.431 – −0.262 |
+| Max lateral deviation (whole run) | 0.27 ± 0.21 m | 0.09 – 0.61 |
+| Stopped / spin / reverse time | 2.3 ± 2.7 / 0.6 ± 0.1 / 3.2 ± 1.9 s | stopped 0.0 – 5.3 |
+| wz sign flips | 13.6 ± 1.1 | 12 – 15 |
+| First detection range (true gap) | 7.50 ± 0.36 m | 7.04 – 7.87 |
+| Detection → KF speed 0.8 m/s | 0.83 ± 0.08 s | 0.74 – 0.94 |
+| Max AMCL error | 0.299 ± 0.130 m | 0.137 – 0.489 |
+| Real-time factor (headless) | 0.59 ± 0.01 | 0.58 – 0.60 |
+
+**The robot does not avoid the person in this protocol.** The negative
+surface clearance in all five trials means the person's body overlapped the
+robot. The goal is reached only because the person then walks on.
+
+The pipeline itself works (pilot bag): the person is detected at about
+7.5 m, the KF reaches walking speed within a second, the cloud is published
+and the global plan bends 0.6 – 0.8 m sideways. But the plan bends only
+next to the person's current position and flips side between replans, and
+the closing speed is 1.5 m/s, so about 5 s pass between detection and
+encounter. The robot drives straight until the person is under 3 m away.
+The hardware runs of 2 Oct show the same pattern (path bends earlier, robot
+does not turn earlier, passes of 0.3 – 0.4 m from robot centre).
+
+**Caveats**
+
+- The sim person is moved with `set_pose`, walks dead centre and never
+  yields. A real pedestrian side-steps, so these numbers are a worst case
+  and not directly comparable with hardware pass distances.
+- Because the person is teleported through the robot, part of the
+  "reverse" time may be the robot being pushed; this was not separated out.
+- Passing side at a 0.01 – 0.18 m minimum distance is not meaningful and is
+  not reported.
+- SocialCritic reads `/person_positions_fused`, which carries zero
+  velocity, so it treats the walker as stationary, as on hardware.
+- The person's SDF collision is two legs and a torso (radius 0.20 m);
+  `PERSON_R` 0.25 m is kept for comparability with the conversation cases.
+- Undock failed once and a parameter dump hung once during the series;
+  both trials were rerun from a fresh launch after adding a retry and a
+  timeout to the script.
+
 ## Custom Gazebo worlds/models - known issue and workaround
 
 `turtlebot4_gz_bringup`'s launch file does not reliably resolve

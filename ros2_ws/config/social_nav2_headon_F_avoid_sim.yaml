@@ -5,7 +5,7 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     bt_loop_duration: 10
-    default_server_timeout: 20
+    default_server_timeout: 200   # HEAD-ON AVOID: 20 -> 200 ms; at 20 the BT timed out on follow_path under load and aborted at start
     wait_for_service_timeout: 5000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose"]
@@ -73,7 +73,9 @@ controller_server:
       # 2 Oct 2026 (synced from hardware): 1.5 -> 0.7. Main wobble source.
       # Early detour is the global path's job (person cloud is in the
       # global costmap), not random angular sampling.
-      wz_std: 0.7
+      # HEAD-ON AVOID: 0.7 -> 1.2. At 0.7 the robot stopped and took ~2 s to
+      # turn 90 deg before it could move aside (bag headon_avoid_v2).
+      wz_std: 1.2
       # TONIGHT FIX (restored lost tuning): vx_max 0.5 -> 0.26.
       # Must match velocity_smoother max (0.26). At 0.5 MPPI planned
       # escape maneuvers at speeds the smoother silently clipped,
@@ -84,7 +86,9 @@ controller_server:
       # Reverse is retained in MPPI's action space, capped to match
       # velocity_smoother's min_velocity[0] (-0.26). Measured reversals
       # peaked at -0.116 m/s, so the cap is never the binding limit.
-      vx_min: -0.31
+      # HEAD-ON AVOID: -0.31 -> 0.0. The robot must not back up while
+      # avoiding (user requirement, 3 Oct); MPPI can no longer sample reverse.
+      vx_min: 0.0
       vy_max: 0.5
       # TONIGHT FIX (restored lost tuning): wz_max 1.9 -> 1.5.
       # Matches velocity_smoother angular cap.
@@ -119,11 +123,18 @@ controller_server:
         consider_footprint: true      # 必须开启，否则按机器人中心点算，不是表面
         critical_cost: 300.0
       SocialCritic:
-        topic: /person_positions_fused
+        # HEAD-ON AVOID: read the KF output, which carries velocity.
+        # /person_positions_fused has vx = vy = 0, so the time-aware
+        # propagation below treated a 1.2 m/s walker as standing still and
+        # the critic only acted once the person was already within reach.
+        topic: /predicted_person_positions
         enabled: true
         cost_power: 1
-        cost_weight: 12.0
-        social_distance: 0.94
+        cost_weight: 20.0
+        # HEAD-ON AVOID: 1.10 -> 1.00. In the 2.5 m corridor the robot centre can be
+        # at most ~1.0 m from a centreline walker, so 1.10 could never be satisfied
+        # and left a cost on every pass, which made retreating look cheaper.
+        social_distance: 1.00
         group_aware: true
         narrow_social_distance: 0.60
         group_topic: "/social_groups"
@@ -138,7 +149,18 @@ controller_server:
         min_coast_speed: 0.15
         max_coast_speed: 2.5
         time_aware: true          # 新增
-        max_prediction_time: 3.0  # 新增
+        max_prediction_time: 6.0  # HEAD-ON AVOID: 3.0 -> 6.0, the full 120 x 0.05 s rollout
+        # HEAD-ON AVOID: keep-right pass side (see social_critic.hpp). Rollout
+        # points within 2 m of an approaching walker must be at least 0.9 m
+        # to the walker's left (the robot's right), matching the keep-right
+        # strip in the person cloud, so plan and controller agree on the side.
+        pass_side_weight: 15.0
+        pass_side_margin: 0.85
+        pass_side_range: 12.0    # ahead of the walker along its lane: the whole approach
+        pass_side_min_closing: 0.5
+        # No retreat from an approaching walker (see social_critic.hpp): step
+        # aside instead of turning round to drive away.
+        no_retreat_weight: 60.0
       GoalCritic:
         enabled: true
         cost_power: 1
@@ -302,7 +324,13 @@ global_costmap:
       # handles social group zones (conversation o-space, static).
       # Complementary layers, same NonPersistentVoxelLayer plugin
       # type for both, different topics.
-      plugins: ["static_layer", "obstacle_layer", "nonpersistent_voxel_layer", "inflation_layer"]
+      # HEAD-ON AVOID: person cloud removed from the GLOBAL costmap. With the
+      # walker's lane marked there, a few decimetres of lateral tracking error
+      # closed the remaining gap in the 2.5 m corridor, NavFn failed ("Failed
+      # to create plan"), and the BT recovery Spin stopped the robot mid-pass
+      # (bag headon_avoid_v12_trial1). The global path now stays a straight
+      # line; the SocialCritic lane rule and the local costmap do the avoiding.
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       # ABLATION F: the graded social zone arrives as a COSTMAP FILTER,
       # not a layer. Filters are applied on top of the combined layers,
       # so no layer can overwrite them - which is what killed both

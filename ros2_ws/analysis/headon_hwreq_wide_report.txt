@@ -1,0 +1,21 @@
+
+=== headon_hwreq_wide_trial1 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                37.5 s
+  path length / mean speed    10.88 m / 0.29 m/s
+  min centre distance         0.784 m  (t = 9.1 s, robot x = -0.59)
+  min surface clearance       +0.345 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.93 m
+  gap when committed (>0.2 m) 3.42 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               13
+  gap at robot start          11.91 m
+  person start - robot start  +1.1 s
+  person speed (GT)           1.20 m/s
+  first detection range       6.92 m
+  detection -> KF 0.8 m/s      0.82 s
+  max AMCL error              0.110 m
+  plans published             259
+  real-time factor            0.65

@@ -1,0 +1,82 @@
+
+=== headon_avoid_nospin_trial1 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                37.6 s
+  path length / mean speed    10.87 m / 0.29 m/s
+  min centre distance         0.889 m  (t = 9.0 s, robot x = -0.70)
+  min surface clearance       +0.450 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.91 m
+  gap when committed (>0.2 m) 7.25 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               12
+  gap at robot start          10.90 m
+  person start - robot start  +1.7 s
+  person speed (GT)           1.19 m/s
+  first detection range       10.01 m
+  detection -> KF 0.8 m/s      0.43 s
+  max AMCL error              0.222 m
+  plans published             261
+  real-time factor            0.66
+
+=== headon_avoid_nospin_trial2 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                38.1 s
+  path length / mean speed    10.90 m / 0.29 m/s
+  min centre distance         0.898 m  (t = 9.6 s, robot x = -0.74)
+  min surface clearance       +0.459 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.93 m
+  gap when committed (>0.2 m) 7.52 m
+  stopped / spin / reverse    0.0 / 0.0 / 0.0 s
+  wz sign flips               9
+  gap at robot start          11.67 m
+  person start - robot start  +1.6 s
+  person speed (GT)           1.20 m/s
+  first detection range       10.76 m
+  detection -> KF 0.8 m/s      0.57 s
+  max AMCL error              0.256 m
+  plans published             256
+  real-time factor            0.67
+
+=== headon_avoid_nospin_trial3 ===
+  reference pose              /sim_ground_truth_pose (exact)
+  goal reached                yes
+  time to goal                44.6 s
+  path length / mean speed    11.39 m / 0.26 m/s
+  min centre distance         0.937 m  (t = 10.1 s, robot x = -1.31)
+  min surface clearance       +0.498 m
+  robot passed on its         right (-y)
+  max lateral deviation       0.94 m
+  gap when committed (>0.2 m) 7.60 m
+  stopped / spin / reverse    0.1 / 1.4 / 0.0 s
+  wz sign flips               11
+  gap at robot start          11.80 m
+  person start - robot start  +1.6 s
+  person speed (GT)           1.19 m/s
+  first detection range       10.95 m
+  detection -> KF 0.8 m/s      0.60 s
+  max AMCL error              0.240 m
+  plans published             305
+  real-time factor            0.67
+
+=== Aggregate: goal reached in 3 / 3 trials ===
+  metric                     mean       sd      min      max   n
+  time_s                   40.062    3.910   37.566   44.568   3
+  min_centre_m              0.908    0.026    0.889    0.937   3
+  min_surface_m             0.469    0.026    0.450    0.498   3
+  max_dev_m                 0.927    0.017    0.910    0.945   3
+  commit_gap_m              7.458    0.185    7.250    7.605   3
+  stopped_s                 0.036    0.062    0.000    0.108   3
+  spin_s                    0.462    0.800    0.000    1.386   3
+  reverse_s                 0.000    0.000    0.000    0.000   3
+  wz_flips                 10.667    1.528    9.000   12.000   3
+  mean_vx                   0.277    0.019    0.256    0.289   3
+  first_det_range_m        10.576    0.495   10.014   10.949   3
+  det_to_kf_s               0.533    0.089    0.432    0.598   3
+  amcl_err_m                0.239    0.017    0.222    0.256   3
+  person_speed              1.192    0.006    1.186    1.198   3
+  rtf                       0.663    0.006    0.657    0.667   3
+  pass side: right (-y) x3

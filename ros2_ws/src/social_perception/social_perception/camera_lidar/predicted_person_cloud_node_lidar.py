@@ -60,12 +60,19 @@ ELLIPSE_EXIT_SPEED = 0.03    # m/s; must drop below this to fall back to disk
 # Ellipse half-width ACROSS the heading. Kept at parity with the person
 # disk radius below: a lane narrower than the person it represents left
 # the predicted region half the width of the body it stood for.
+# 0.55 tried 2 Oct (bag headon_F_wz07_infl035_b055): path moved ~0.3 m further
+# out but the robot could not follow in time - pass stayed ~0.3-0.4 m from
+# robot centre, and 4 planner failures in the first leg. Reverted to 0.4.
 ELLIPSE_B = 0.4         # m (shrunk from 1.20 - was wider than long, causing round/omnidirectional footprint)
 
 # Ellipse half-length ALONG the heading, as a function of walking speed.
 # At the 1.2 m/s test speed this gives a = 0.60 + 0.60 = 1.20 m, so the
 # marked lane runs ~2.4 m end to end.
 ELLIPSE_A_BASE = 0.6           # m (raised so forward axis dominates at low speed too)
+# 1.2 tried 2 Oct (bag headon_F_wz07_infl035_slope12_20261002_143752): path
+# bent earlier (person at 6.8 m vs ~5 m) but the robot did not turn earlier,
+# the ~4.2 m lane swept over it (vx dipped to 0.04) and the pass stayed
+# ~0.4 m from robot centre. Reverted to 0.75.
 ELLIPSE_A_SLOPE = 0.75             # m per (m/s)
 ELLIPSE_A_MAX = 3.00               # m
 
@@ -126,7 +133,7 @@ ENABLE_DYNAMIC_PASS_SIDE = False
 # used when the ellipse is suppressed. Same radius, different sampling:
 # the current-position disk is denser because it is what the local
 # planner collides against.
-PERSON_DISK_RADIUS = 0.4   # m (0.5 -> 0.7 tested 10 Sep: 0.7 gave correct marks at 202 pts but robot stopped, corridor too narrow for lane+inflation; 0.6 under test to bracket the limit)
+PERSON_DISK_RADIUS = 0.4   # m (0.55 tried 2 Oct and reverted, see ELLIPSE_B; earlier: 0.5 -> 0.7 tested 10 Sep: 0.7 gave correct marks at 202 pts but robot stopped, corridor too narrow for lane+inflation; 0.6 under test to bracket the limit)
 PERSON_DISK_SPACING = 0.10         # m
 FALLBACK_DISK_SPACING = 0.15       # m
 ELLIPSE_SPACING = 0.15             # m
@@ -207,12 +214,50 @@ DUPLICATE_TRACK_RADIUS = 0.45      # m
 # camera-lidar offsets seen (0.04-0.11 m) and well under person spacing.
 # ---------------------------------------------------------------------
 GROUP_MEMBER_TOPIC = "/social_groups"
-GROUP_MEMBER_RADIUS = 0.50         # m; track within this of a member = that member
+GROUP_MEMBER_RADIUS = 0.70         # m; track within this of a member = that member
+                                   # (was 0.50: member_xy is now the detector's LIDAR
+                                   # anchor while tracks here are camray, ~0.35 m off
+                                   # at rest and jumpier while driving - 0.50 let a
+                                   # member slip through and get double-marked)
 GROUP_MEMBER_TIMEOUT = 2.0         # s; stop suppressing if group detection dies
 
 class PredictedPersonCloudNode(Node):
     def __init__(self):
         super().__init__("predicted_person_cloud_node")
+
+        # SIM (head-on avoidance): the forward lane length as parameters.
+        # Defaults are the hardware constants above. A longer lane marks
+        # more of the walker's path ahead, so the global planner moves the
+        # robot to one side earlier instead of only beside the person.
+        global ELLIPSE_A_SLOPE, ELLIPSE_A_MAX, ELLIPSE_B, PERSON_DISK_RADIUS
+        # SIM (hardware-range head-on): lane half-width and body disk radius
+        # as parameters, defaults = the hardware constants. The lane is
+        # lethal in the local costmap; at ~7 m detection the robot is still
+        # crossing when it enters the 4 m marking range, finds itself inside
+        # the 0.4 m half-width lane (plus footprint and a 0.2-0.3 m estimate
+        # bias toward the robot), MPPI has no collision-free rollout and
+        # the robot stops mid-crossing (bag headon_hwreq_r1_trial1). The
+        # SocialCritic lane rule now does the lane's job, so the marked lane
+        # can be narrow.
+        self.declare_parameter("ellipse_b", ELLIPSE_B)
+        self.declare_parameter("person_disk_radius", PERSON_DISK_RADIUS)
+        ELLIPSE_B = float(self.get_parameter("ellipse_b").value)
+        PERSON_DISK_RADIUS = float(self.get_parameter("person_disk_radius").value)
+        self.declare_parameter("ellipse_a_slope", ELLIPSE_A_SLOPE)
+        self.declare_parameter("ellipse_a_max", ELLIPSE_A_MAX)
+        ELLIPSE_A_SLOPE = float(self.get_parameter("ellipse_a_slope").value)
+        ELLIPSE_A_MAX = float(self.get_parameter("ellipse_a_max").value)
+        # SIM (head-on avoidance): keep-right pass side. The lane is
+        # symmetric about the walker's heading, so in a head-on encounter
+        # the global plan picked a side from tracking noise and flipped
+        # between replans (bags headon_avoid_v1..v4). With a width > 0 a
+        # strip of that width is marked along the walker's RIGHT-hand
+        # side of the lane, so the robot always passes on the walker's
+        # left = its own right, as pedestrians keep right. 0 = off
+        # (hardware behaviour).
+        self.declare_parameter("pass_side_block_width", 0.0)
+        self.pass_side_block_width = float(
+            self.get_parameter("pass_side_block_width").value)
 
         # THESIS FIX (frame mismatch): was "odom". Every upstream node
         # in this pipeline (yolo_detector.py, lidar_person_detector.py,
@@ -502,18 +547,15 @@ class PredictedPersonCloudNode(Node):
         # "whoever covers that person's body owns them", which is the
         # group layer for a queue and this node for a conversation.
         # ==========================================================
-        # THESIS CHANGE (ablation F): conversation members are now
-        # deferred as well, not just queue members. Previously their
-        # lethal ellipses here merged across a 1.5 m pair gap, so the
-        # o-space was blocked and the graded ladder in
-        # social_zone_costmap_node could never be exercised - in a
-        # narrow corridor there was no valid plan at all. The zone node
-        # now paints a 0.25 m lethal core per member instead, so driving
-        # into a person stays illegal while the space between them is
-        # merely expensive. Moving people in no group are unaffected and
-        # keep their full directional ellipse here, which is what head-on
-        # avoidance relies on.
-        if parts[1].strip() not in ("queue", "conversation"):
+        # THESIS CHANGE (ablation F, ported from sim + side_by_side):
+        # conversation and side_by_side members are now deferred too.
+        # social_zone_costmap_node paints each member's body itself
+        # (0.25 m lethal core + 0.8 m halo at cost 80) for BOTH pair
+        # types (fused zone), so marking them here as well double-marks
+        # the bodies - and their inflated ellipses close the gap in a
+        # narrow corridor, blocking the o-space the graded ladder needs.
+        # Moving people in no group keep their directional ellipse here.
+        if parts[1].strip() not in ("queue", "conversation", "side_by_side"):
             return
 
         now = self.get_ros_time_seconds()
@@ -667,6 +709,8 @@ class PredictedPersonCloudNode(Node):
 
         if use_ellipse:
             points.extend(self._ellipse_points(current_x, current_y, heading, speed, track))
+            if self.pass_side_block_width > 0.0:
+                points.extend(self._pass_side_block_points(current_x, current_y, heading, speed))
         else:
             # THESIS FIX (double-lobe blob for a stationary person):
             # this used to anchor the fallback disk at predicted_x,
@@ -775,6 +819,49 @@ class PredictedPersonCloudNode(Node):
         return self.make_ellipse_points(
             cx, cy, heading=heading, a=a, b=ELLIPSE_B,
             spacing=ELLIPSE_SPACING, z=0.3)
+
+    def _pass_side_block_points(self, current_x, current_y, heading, speed):
+        """Keep-right strip for a walker coming TOWARD the robot.
+
+        The axis is the line from the person to the robot, not the
+        person's heading: the KF heading was off by up to ~15 deg at 5-7 m
+        (bag headon_avoid_v5_trial1), which swung a heading-aligned strip
+        across the corridor and once left no valid plan at all
+        (headon_avoid_v5_trial2, ABORTED at t = 1.5 s). The person-robot
+        line over several metres is far steadier.
+
+        The strip runs from the person toward the robot, stopping 1 m
+        short of it, and covers the walker's right-hand side from 0.25 m
+        off that line outward by pass_side_block_width (wide enough to
+        reach the wall, so the plan cannot squeeze past on that side).
+        Only for a walker approaching faster than 0.5 m/s along the line.
+        """
+        if self.last_robot_xy is None:
+            return []
+        rx, ry = self.last_robot_xy
+        dx, dy = rx - current_x, ry - current_y
+        dist = math.hypot(dx, dy)
+        if dist < 1e-3:
+            return []
+        ux, uy = dx / dist, dy / dist
+        closing = speed * (math.cos(heading) * ux + math.sin(heading) * uy)
+        if closing < 0.5:
+            return []
+        length = min(6.0, dist - 1.0)
+        if length <= 0.0:
+            return []
+        px, py = uy, -ux                      # walker's right, facing the robot
+        pts = []
+        step = ELLIPSE_SPACING
+        n_long = int(length / step) + 1
+        n_lat = int(self.pass_side_block_width / step) + 1
+        for i in range(n_long):
+            s_long = i * step
+            for j in range(n_lat):
+                s_lat = 0.25 + j * step
+                pts.append((current_x + s_long * ux + s_lat * px,
+                            current_y + s_long * uy + s_lat * py, 0.3))
+        return pts
 
     def _fallback_disk_points(self, predicted_x, predicted_y, heading, track):
         cx, cy = predicted_x, predicted_y

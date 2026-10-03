@@ -1,0 +1,49 @@
+<!--
+  Head-on avoidance tree (sim, 3 Oct 2026). Based on
+  navigate_to_pose_blocked_beep_hw.xml (hardware blocked-beep style: no Spin,
+  no BackUp, outer retries 1, Wait 3 s, 5 Hz replanning) with ONE change:
+
+    a failed replan no longer fails the pipeline. The controller keeps
+    following the last plan it was given.
+
+  Why: while a walker passes, the global costmap can be closed for a moment -
+  the walker's disk (its estimate drifts sideways while the tracker coasts) on
+  one side, the SocialCritic's keep-side block on the other. NavFn then fails
+  for a few replans. With the original tree that failed the whole pipeline,
+  and after one retry the goal was ABORTED with the robot standing beside the
+  walker's path (bags headon_hwreq_b2_y-0.4_trial1, headon_hwreq_z3_y-0.4_trial1,
+  headon_hwreq_z4_corr_trial2). The blockage is gone a second later, and the
+  avoidance itself is done by the controller, so the old plan is good enough
+  to drive on.
+
+  If the very first plan fails there is no path at all, FollowPath fails, and
+  the normal recovery (clear costmaps, wait) still runs.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="5.0">
+          <Fallback name="ReplanOrKeepLastPlan">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <AlwaysSuccess/>
+          </Fallback>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Wait wait_duration="3"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
