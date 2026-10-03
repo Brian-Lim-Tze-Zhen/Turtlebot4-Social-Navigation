@@ -393,7 +393,8 @@ Centreline head-on at 1.2 m/s, n = 5 protocol trials:
 
 **The robot does not avoid the person in this protocol.** The negative
 surface clearance in all five trials means the person's body overlapped the
-robot. The goal is reached only because the person then walks on.
+robot. The goal is reached only because the person then walks on. The
+fix is in "Head-on avoidance" below.
 
 The pipeline itself works (pilot bag): the person is detected at about
 7.5 m, the KF reaches walking speed within a second, the cloud is published
@@ -420,6 +421,112 @@ does not turn earlier, passes of 0.3 – 0.4 m from robot centre).
 - Undock failed once and a parameter dump hung once during the series;
   both trials were rerun from a fresh launch after adding a retry and a
   timeout to the script.
+
+## Head-on avoidance (corridor, hardware perception limits)
+
+The baseline above overlaps the walker in every trial. This section is the
+follow-up: the same corridor and walker, with the SocialCritic extended so
+the robot passes at 0.8 m or more (robot centre to person centre) without
+stopping, spinning or reversing. Perception runs at the real robot's limits
+(YOLO at 320 px, publish confidence 0.45, 8 m range cap), so the person is
+first seen at about 7 m.
+
+A surface clearance of 0.8 m is not possible here: the corridor is 2.5 m
+wide, and the robot centre cannot get further than about 0.9 m from a
+centreline walker before it jams against the wall.
+
+### Why the baseline fails
+
+1. The critic read `/person_positions_fused`, which has no velocity, so it
+   treated a 1.2 m/s walker as standing still.
+2. Left and right cost the same in a head-on, so the side was picked by
+   noise and changed between control cycles.
+3. Reversing was allowed (`vx_min` −0.31), and backing away was cheaper
+   than committing to a side.
+4. A failed replan triggered the behaviour tree's Spin recovery mid-encounter.
+
+### What was added to SocialCritic
+
+Every new parameter is off by default, so the other conditions are unchanged.
+
+| Rule | Parameters | What it does |
+|---|---|---|
+| Velocity | `topic: /predicted_person_positions`, `max_prediction_time: 6.0` | Reads the KF output and moves the person forward in time along each rollout. |
+| Frozen lane | `pass_side_weight`, `pass_side_margin` 0.80, `pass_side_max_offset` 0.90 | Draws a line from the robot's position at first sight towards the walker and keeps it fixed for that track. Rollouts must stay 0.80 – 0.90 m to one side of it. |
+| Lane on first sight | `lane_on_first_sight_s` 1.5 | Uses a provisional lane until the KF confirms the approach, which takes about 1 s. |
+| Walker held on lane | `lane_lateral_trust` 0 | Ignores the 0.2 – 0.4 m sideways swing of the estimate while the robot turns. |
+| No retreat | `no_retreat_weight` 300, `vx_min` 0.0 | Penalises rollout steps that lose ground, only while the walker is still ahead. |
+| Side selection | `pass_side_auto`, `side_decision_s` 0.6, `side_switch_offset` 0.10, `side_commit_offset` 0.06 | Keeps right by default; goes left if the walker reads more than 0.10 m to the right. The side locks once the robot is 6 cm off the lane. |
+| Lane carry-over | `lane_carry_radius` 0.6, `lane_carry_along` 2.0 | A re-acquired track with a new id inherits the old lane and side. |
+| Keep-side block | `publish_lane_block` | Publishes `/social_critic/lane_block`, marked in the **global** costmap only, so NavFn plans on the same side as the controller. |
+| Markers | `publish_markers` | Lane and target strip on `/social_critic/lane_markers` for RViz. |
+
+Other changes in the config: `wz_std` 0.7 (above about 0.9 the real robot
+wobbles), `movement_time_allowance` 10, the person cloud reduced to a body
+disk of radius 0.30 m (the forward lane trapped the robot mid-crossing), and
+`behavior_trees/navigate_to_pose_keep_last_plan.xml`, which has no Spin or
+BackUp and keeps the last plan when a replan fails.
+
+### Running it
+
+    CFG=$PWD/config/social_nav2_headon_F_hwreq_block_sim.yaml \
+    YOLO_IMGSZ=320 YOLO_MIN_CONF=0.45 MAX_PERSON_RANGE=8.0 \
+    RAY_COAST=true RAY_COAST_S=1.5 COAST_TIMEOUT=1.5 \
+    LANE_B=0.15 DISK_R=0.30 LANE_SLOPE=0.0 LANE_MAX=0.3 \
+    SHOW_RVIZ=true HEADLESS=false ./run_headon_F_trial.sh <bag_name>
+
+`PERSON_Y` moves the walker sideways, `WORLD=empty_human` runs in open
+space, `TRACK_DROPOUT_AT=<m>` loses the track at that range and returns it
+under a new id. `run_headon_F_batch.sh <prefix> <n> ENV=val…` runs n trials
+and aggregates. `SHOW_RVIZ=false HEADLESS=true` runs without windows.
+`social_nav2_headon_F_hwreq_sim.yaml` is the same config without the block.
+
+### Results (simulation, 3 Oct 2026)
+
+Centreline walker at 1.2 m/s, `hwreq_block` config, n = 5
+(`analysis/headon_hwreq_z5_corr_report.txt`):
+
+| Metric | Baseline | Avoidance (mean ± SD) | Range |
+|---|---|---|---|
+| Goal reached | 5 / 5 | 5 / 5 | — |
+| Min centre distance (GT) | 0.058 m | 0.834 ± 0.036 m | 0.804 – 0.891 |
+| Min surface clearance (GT) | −0.381 m | 0.395 ± 0.036 m | 0.365 – 0.452 |
+| Pass side | — | right 5 / 5 | — |
+| Stopped / spin / reverse time | 2.3 / 0.6 / 3.2 s | 0.0 / 0.0 / 0.0 s | — |
+| Time to goal | 42.9 s | 37.1 ± 0.2 s | 36.8 – 37.4 |
+| wz sign flips | 13.6 | 10.0 ± 2.0 | 7 – 12 |
+| First detection range (true gap) | 7.50 m | 7.19 ± 0.37 m | 6.81 – 7.80 |
+
+Other cases, same config unless noted (single runs or small n):
+
+| Case | n | Pass side | Min centre distance |
+|---|---|---|---|
+| Walker 0.4 m to the robot's right | 3 | left | 1.127 – 1.190 m |
+| Walker 0.7 m to the right | 1 | left | 1.392 m |
+| Walker at the right wall (0.95 m) | 1 | left | 1.349 m |
+| Walker 0.4 m to the left | 2 | right | 1.211, 1.263 m |
+| Track lost at 5.5 m for 1 s, new id | 2 | right | 0.863, 0.885 m |
+| Open space, with block (earlier side settings) | 5 | right | 0.773 – 0.902 m |
+| Without the block (`hwreq`) | 5 | right | 0.854 ± 0.037 m |
+| Long range (YOLO 640 px, seen at 11 m, `avoid_gentle`) | 5 | right | 0.879 ± 0.021 m |
+
+**Limits**
+
+- The margin over 0.8 m is thin: the lowest corridor run was 0.804 m and
+  one open-space run was 0.773 m.
+- The walker's sideways position is only known to about ±0.23 m at 7 m, so
+  a centred walker is sometimes passed on the left.
+- A walker hugging the wall was not detected in one earlier run (YOLO
+  confidence 0.16 – 0.41, below the 0.45 threshold).
+- One person only. A side-by-side pair could be split down the middle.
+- The sim walker goes straight at 1.2 m/s and never yields. The hardware
+  bags of 25 Sep show 1.36 – 1.41 m/s and a lost track at the turn-around
+  in 7 of 11 runs.
+- The numbers `social_distance` 0.86 and the 0.80 – 0.90 strip are fitted
+  to this 2.5 m corridor.
+- Not yet ported to the real robot (Humble). The hardware SocialCritic has
+  diverged from this one and needs the lane code merged by hand.
+- About 1 launch in 4 fails at Nav2 startup; the trial script retries.
 
 ## Custom Gazebo worlds/models - known issue and workaround
 
