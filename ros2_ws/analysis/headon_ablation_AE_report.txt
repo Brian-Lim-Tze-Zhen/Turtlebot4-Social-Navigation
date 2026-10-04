@@ -1,0 +1,65 @@
+Head-on ablation A-E, bags of 14-15 Aug 2026, recomputed 4 Oct 2026
+Script: analysis/analyse_avoidance.py bags/[a-e]_*_t0*/data
+Per-trial values: analysis/headon_ablation_AE_results.csv
+Note: config_used.yaml is identical in all 36 bags (social_nav2_fast_person_test.yaml),
+      so the snapshot does not prove which ablation config was launched.
+
+a_nolayer  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.151    0.024    0.118    0.186
+  max_lateral_dev       0.396    0.068    0.293    0.479
+  path_ratio            1.091    0.016    1.077    1.122
+  commit_dist           0.650    0.519    0.186    1.577
+  dev_at_min           -0.139    0.112   -0.220    0.084
+  duration_s           43.117    3.600   41.082   50.322
+  mean_speed            0.264    0.023    0.222    0.285
+
+b_critweight20  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.682    0.024    0.650    0.714
+  max_lateral_dev       0.964    0.034    0.905    0.991
+  path_ratio            1.115    0.006    1.103    1.121
+  commit_dist           3.504    0.387    2.876    3.957
+  dev_at_min           -0.692    0.043   -0.745   -0.628
+  duration_s           42.658    1.625   40.695   45.525
+  mean_speed            0.273    0.010    0.255    0.286
+
+c_critweight10  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.688    0.069    0.557    0.739
+  max_lateral_dev       0.961    0.055    0.858    1.020
+  path_ratio            1.113    0.007    1.106    1.124
+  commit_dist           3.710    0.480    2.927    4.263
+  dev_at_min           -0.693    0.066   -0.737   -0.562
+  duration_s           43.190    2.796   38.886   46.308
+  mean_speed            0.268    0.017    0.246    0.293
+
+d_critweight10_socialcritic_on  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.740    0.108    0.526    0.822
+  max_lateral_dev       1.192    0.106    1.069    1.360
+  path_ratio            1.158    0.014    1.146    1.179
+  commit_dist           3.264    0.472    2.594    4.018
+  dev_at_min           -0.732    0.102   -0.808   -0.531
+  duration_s           43.659    1.636   41.739   46.497
+  mean_speed            0.275    0.010    0.262    0.291
+
+e_critweight20_socialcritic_on_1.2  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.845    0.017    0.825    0.874
+  max_lateral_dev       1.240    0.117    1.103    1.450
+  path_ratio            1.150    0.018    1.125    1.175
+  commit_dist           4.184    0.271    3.838    4.486
+  dev_at_min           -0.866    0.032   -0.911   -0.826
+  duration_s           42.679    1.225   41.421   44.790
+  mean_speed            0.281    0.009    0.263    0.289
+
+e_critweight20_socialcritic_on  (n=6)
+  metric                 mean       sd      min      max
+  min_distance          0.824    0.054    0.760    0.917
+  max_lateral_dev       1.236    0.159    1.018    1.387
+  path_ratio            1.162    0.014    1.139    1.178
+  commit_dist           3.720    0.242    3.464    4.156
+  dev_at_min           -0.823    0.029   -0.856   -0.786
+  duration_s           44.337    2.022   42.420   47.481
+  mean_speed            0.274    0.009    0.260    0.283

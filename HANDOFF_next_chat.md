@@ -10,6 +10,10 @@ reference for whoever picks the work up.
     /root/thesis_social_navigation_ws). Read HANDOFF_next_chat.md in the repo
     root and the README first.
 
+    The container may be stopped (it was on 4 Oct). Check with
+    `docker ps -a --filter name=thesis_social_nav` and, if it is not running,
+    start it with `docker start thesis_social_nav` before anything else.
+
     The head-on avoidance work is finished for now and is on branch
     headon-avoidance. Next is the conversation scenario: two men standing
     apart, with the distance between them between the thresholds. Before
@@ -35,10 +39,10 @@ reference for whoever picks the work up.
 |---|---|
 | Repo | `~/thesis_social_navigation`, GitHub `Brian-Lim-Tze-Zhen/Turtlebot4-Social-Navigation` |
 | Current branch | `headon-avoidance` (all head-on work; `main` is untouched) |
-| Sim container | `thesis_social_nav`; workspace `/root/thesis_social_navigation_ws` = `ros2_ws/` |
+| Sim container | `thesis_social_nav`; workspace `/root/thesis_social_navigation_ws` = `ros2_ws/`. Found stopped (Exited 137) on 4 Oct: `docker start thesis_social_nav`, then `docker exec -it thesis_social_nav bash`. |
 | Real robot repo (read-only) | `/home/brian/Desktop/Turtlebot4/humble_client/workspace` (Humble) |
 | Bags and logs | `ros2_ws/bags`, `ros2_ws/logs` (git-ignored, on this machine only) |
-| Result reports | `ros2_ws/analysis/*_report.txt` (in git) |
+| Result reports | `ros2_ws/analysis/*_report.txt` (in git, including `headon_ablation_AE_report.txt` and `headon_ablation_AE_results.csv`, the A – E head-on ablation recomputed on 4 Oct from the August bags) |
 | Thesis draft | `~/Draft - Thesis/thesis.md` |
 | Previous chat | `~/Documents/claude-chat-backups/` (raw transcript copy) |
 
@@ -57,8 +61,9 @@ code used for that run (`config_used.yaml`, `*_used.py`, `social_critic_used.cpp
 original.** These shared files changed during the head-on work:
 
 - `config/social_nav2_ablation_F_socialzone_sim.yaml`: MPPI tuning synced from
-  the robot (`time_steps` 200 → 120, `wz_std` 1.5 → 0.7, PathFollow 4 → 6,
-  global `inflation_radius` 0.25 → 0.35).
+  the robot (`time_steps` 200 → 120, `wz_std` 1.5 → 0.7, `wz_max` 1.9 → 1.5,
+  PathFollow `cost_weight` 4 → 6, global `inflation_radius` 0.25 → 0.35).
+  These five are the whole diff of that file against the tag.
 - Perception nodes synced to the robot's 2 Oct code (motion release,
   stationary hold, KF `q_pos`/`q_vel`, cloud `GROUP_MEMBER_RADIUS` 0.50 → 0.70,
   `side_by_side` members deferred to the zone node).
@@ -159,7 +164,8 @@ Thresholds in the current code (the ones "between the thresholds" could refer to
 | `CONV_MIN_DIST` | 0.3 m | group detector | Closer than this is treated as one person. |
 | `CONV_MAX_SPEED` | 0.30 m/s | group detector | Both must be near-stationary. |
 | `CONV_MIN_DURATION` | 0.75 s | group detector | Closeness must last this long. |
-| Wide/narrow buffer | 0.4 m | group detector `_effective_buffer` | Free flank gap along the pair axis; at or above it the pair is "wide" (route around), below it "narrow" (pass between). |
+| Wide/narrow buffer (`ZONE_BUFFER`) | 0.4 m | group detector `_effective_buffer` | Free flank gap along the pair axis; at or above it the pair is "wide" (route around), below it "narrow" (pass between). The detector publishes the resulting buffer as field 10 of `/social_groups` (0.400 = wide). |
+| `narrow_buffer_threshold` | 0.39 | SocialCritic (default; not set in the F config) | The critic's own test on that field: a group is narrow if field 10 is **below 0.39**. It is 0.01 under the detector's 0.4 so that a published 0.400 reads as wide. The two values must be changed together. |
 | Halo overlap | 1.6 m | zone node (2 × 0.8 m halo) | Below this separation the two personal-space halos meet in the gap. |
 | Penalty-free pass | 1.20 m | SocialCritic (2 × `narrow_social_distance` 0.60) | Smallest separation the robot can pass between without critic cost. |
 | Physical contact | 0.88 m | 2 × (0.25 + 0.189) | Bodies and robot touch. |
