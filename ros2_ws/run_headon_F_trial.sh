@@ -20,8 +20,19 @@
 #   LANE_B, DISK_R  person cloud lane half-width / body disk radius
 #   TRACK_DROPOUT_AT=<m> [TRACK_DROPOUT_S]   test: critic loses the track, new id
 #   SHOW_RVIZ=true   open RViz (config/headon_view.rviz) for the trial
+#   STOP_BEEP=true   start person_stop_beep_node_sim.py (beeps while the collision
+#                    monitor's PersonStop zone holds the robot); on by default
+#                    for a *stopbeep* config, which is the one that has the zone
 #                                                 (defaults: hardware values)
 #   PERSON_SPEED, PERSON_Y, PERSON_X0, PERSON_X1, GOAL_X, GOAL_Y, GOAL_TIMEOUT
+#   BLOCKED_BEEP=true   start blocked_person_beep_node_sim.py (beeps when the robot
+#                       cannot move and a person is in front) and
+#                       beep_retry_node_sim.py (resends the goal if Nav2 aborts)
+#   BLOCKED_HOLD=true   with BLOCKED_BEEP: also hold the robot still while blocked
+#                       (needs the BlockedHold zone). A *blockedhold* config turns
+#                       BLOCKED_BEEP and BLOCKED_HOLD on by default.
+#   PERSON_START_DELAY=<sim s>   the person(s) stand at the start point this long
+#                       after the goal is accepted, then walk (blocked-person test)
 #   PERSON2_Y=<m> [PERSON2_X0 PERSON2_X1 PERSON2_SPEED]   second walker (person_2);
 #                                  needs a world that has it: WORLD=two_human
 set -e
@@ -96,6 +107,17 @@ COAST_TIMEOUT="${COAST_TIMEOUT:-1.5}"; RAY_COAST="${RAY_COAST:-false}"; RAY_COAS
 # /dev/shm cleanup below: an RViz left open from before loses its DDS
 # shared-memory segments in that cleanup and shows nothing.
 SHOW_RVIZ="${SHOW_RVIZ:-false}"
+# Stop-and-beep: the zone lives in the *stopbeep* config, the beep in the node.
+case "$(basename "$CFG")" in
+  *stopbeep*) STOP_BEEP="${STOP_BEEP:-true}" ;;
+esac
+STOP_BEEP="${STOP_BEEP:-false}"
+case "$(basename "$CFG")" in
+  *blockedhold*) BLOCKED_BEEP="${BLOCKED_BEEP:-true}"; BLOCKED_HOLD="${BLOCKED_HOLD:-true}" ;;
+esac
+BLOCKED_BEEP="${BLOCKED_BEEP:-false}"
+BLOCKED_HOLD="${BLOCKED_HOLD:-false}"
+PERSON_START_DELAY="${PERSON_START_DELAY:-}"
 # Person cloud lane half-width and body disk radius; defaults = hardware.
 LANE_B="${LANE_B:-0.4}"; DISK_R="${DISK_R:-0.4}"
 
@@ -299,6 +321,14 @@ if [ -n "$TRACK_DROPOUT_AT" ]; then
 fi
 start group_detector python3 "$CL/social_group_detector_node_lidarhold_sim.py" --ros-args \
   -p use_sim_time:=true -p costmap_topic:=/map -p show_debug_image:=false
+if [ "$STOP_BEEP" = "true" ]; then
+  start stop_beep python3 "$CL/person_stop_beep_node_sim.py" --ros-args -p use_sim_time:=true
+fi
+if [ "$BLOCKED_BEEP" = "true" ]; then
+  start blocked_beep python3 "$CL/blocked_person_beep_node_sim.py" --ros-args -p use_sim_time:=true \
+    -p hold:="$BLOCKED_HOLD"
+  start beep_retry python3 "$CL/beep_retry_node_sim.py" --ros-args -p use_sim_time:=true
+fi
 
 # ----------------------------------------------------------------
 # 4. Readiness. The person starts 12.5 m away, beyond the 8 m camera-ray
@@ -335,6 +365,11 @@ cp "$CL/predicted_person_cloud_node_lidar.py" "$BAG/cloud_node_used.py"
 cp "$CL/social_zone_costmap_node_sim.py" "$BAG/zone_node_used.py"
 cp "$CL/social_group_detector_node_lidarhold_sim.py" "$BAG/detector_used.py"
 cp "$MOVER" "$BAG/mover_used.py"
+[ "$STOP_BEEP" = "true" ] && cp "$CL/person_stop_beep_node_sim.py" "$BAG/stop_beep_used.py"
+if [ "$BLOCKED_BEEP" = "true" ]; then
+  cp "$CL/blocked_person_beep_node_sim.py" "$BAG/blocked_beep_used.py"
+  cp "$CL/beep_retry_node_sim.py" "$BAG/beep_retry_used.py"
+fi
 cp "$WS/launch/perception_camray_bringup_sim.launch.py" "$BAG/launch_used.py"
 cp "$WS/src/social_critic/src/social_critic.cpp" "$BAG/social_critic_used.cpp"
 cp "/opt/ros/jazzy/share/turtlebot4_gz_bringup/worlds/$WORLD.sdf" "$BAG/world_used.sdf"
@@ -358,6 +393,8 @@ Person: ($PERSON_X0, $PERSON_Y) -> ($PERSON_X1, $PERSON_Y) at $PERSON_SPEED m/s,
 Person 2: ${PERSON2_Y:+($PERSON2_X0, $PERSON2_Y) -> ($PERSON2_X1, $PERSON2_Y) at $PERSON2_SPEED m/s}${PERSON2_Y:+ }$([ -z "$PERSON2_Y" ] && echo none)
 Perception: coast_timeout $COAST_TIMEOUT, ray_coast $RAY_COAST ($RAY_COAST_S s), yolo imgsz $YOLO_IMGSZ, min conf $YOLO_MIN_CONF, max person range $MAX_PERSON_RANGE, lane slope $LANE_SLOPE max $LANE_MAX, pass-side block $PASS_BLOCK, lane half-width $LANE_B, disk radius $DISK_R
 Track dropout test: at "${TRACK_DROPOUT_AT:-off}" m for $TRACK_DROPOUT_S s
+Stop-and-beep node: $STOP_BEEP
+Blocked-person beep + beep-retry nodes: $BLOCKED_BEEP (hold $BLOCKED_HOLD)   Person start delay: ${PERSON_START_DELAY:-default} s
 NOTES
 
 echo "[headon_F] Recording to $BAG/data ..."
@@ -369,6 +406,7 @@ setsid ros2 bag record \
            /person_positions_fused /predicted_person_positions /predicted_person_cloud \
            /social_groups /social_zone_map /social_critic/lane_markers /social_critic/lane_block \
            /predicted_person_positions_dropout /rosout \
+           /cmd_audio /person_stop_event /person_stop_zone /blocked_person_event /blocked_hold_polygon \
   -o "$BAG/data" > "$LOG_DIR/bag.log" 2>&1 &
 BAG_PID=$!
 sleep 3
@@ -392,7 +430,7 @@ if [ -f "$FLAG" ]; then
   echo "[headon_F] Goal accepted - starting the person."
   # Two walkers: both hold until one shared sim time, so they start together.
   START_AT=0.0
-  if [ -n "$PERSON2_Y" ]; then
+  if [ -n "$PERSON2_Y" ] || [ -n "$PERSON_START_DELAY" ]; then
     START_AT=$(timeout 20 python3 -c "
 import rclpy
 from rosgraph_msgs.msg import Clock
@@ -400,9 +438,9 @@ from rclpy.qos import qos_profile_sensor_data
 rclpy.init(); n = rclpy.create_node('headon_clock_probe'); got = []
 n.create_subscription(Clock, '/clock', lambda m: got.append(m.clock.sec + m.clock.nanosec * 1e-9), qos_profile_sensor_data)
 while not got: rclpy.spin_once(n, timeout_sec=0.2)
-print(f'{got[0] + 3.0:.2f}')
+print(f'{got[0] + ${PERSON_START_DELAY:-3.0}:.2f}')
 " 2>/dev/null || echo 0.0)
-    echo "[headon_F] Both walkers start at sim time $START_AT s."
+    echo "[headon_F] Walker(s) start at sim time $START_AT s."
   fi
   start mover python3 "$MOVER" --ros-args -p use_sim_time:=true \
     -p world_name:="$WORLD" -p model_name:=person_1 \

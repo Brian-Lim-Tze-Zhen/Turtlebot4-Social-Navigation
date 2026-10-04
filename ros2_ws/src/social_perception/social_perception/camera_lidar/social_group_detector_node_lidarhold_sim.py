@@ -133,6 +133,20 @@ LIDAR_HOLD_MAX_S = 30.0       # s; camera must re-confirm within this, safety bo
 SCAN_FRAME = "rplidar_link"   # scan header frame is not in the TF tree
 MAP_FRAME = "map"
 
+# --- Queue (3+ people standing in a line), 4 Oct 2026 ---
+# Ported from Queue/group_formation_detector.py (same thresholds), off unless
+# the parameter queue_detection is true. Without it four people in a line
+# were only ever seen as neighbouring side_by_side pairs, one at a time
+# (bag queue_F_explore_1), so most gaps in the line had no zone.
+QUEUE_MIN_MEMBERS = 3
+QUEUE_MAX_SPACING = 1.5       # m; max gap between consecutive members
+QUEUE_MIN_SPACING = 0.3       # m; closer than this = the same person twice
+QUEUE_MAX_PERP_DEV = 0.4      # m; max sideways deviation from the line
+QUEUE_MAX_SPEED = 0.4         # m/s; a queue may shuffle forward slowly
+QUEUE_HOLD_MIN_VISIBLE = 2    # members that must still be seen (camera or LIDAR)
+QUEUE_HOLD_MATCH_RADIUS = 0.6  # m; well under the member spacing
+QUEUE_HOLD_MISS_LIMIT = 3     # detection cycles below MIN_VISIBLE before dropping
+
 GROUP_BREAKUP_DIST_HOLD = 1.0  # s; pair must exceed CONV_MAX_DIST for
                                   # this long (not just one noisy sample)
                                   # before the cached group is cleared
@@ -340,6 +354,9 @@ class SocialGroupDetector(Node):
         self.rgb_topic = self.get_parameter("rgb_topic").value
         self.costmap_topic = self.get_parameter("costmap_topic").value
         self.show_debug_image = self.get_parameter("show_debug_image").value
+        self.declare_parameter("queue_detection", False)
+        self.queue_detection = bool(self.get_parameter("queue_detection").value)
+        self.queue_hold = None      # {"xy": [(x, y), ...] along the line, "time", "miss"}
 
         self.tracks = {}
         self.bridge = CvBridge()
@@ -715,8 +732,21 @@ class SocialGroupDetector(Node):
 
         groups = []
         handled_pairs = set()   # pairs already published from live camera tracks
-        for i, id_a in enumerate(fresh_ids):
-            for id_b in fresh_ids[i + 1:]:
+        # Queue first (see QUEUE_*): its members are not pair candidates.
+        # Every neighbouring pair in a queue also passes the pair test.
+        pair_ids = fresh_ids
+        if self.queue_detection:
+            queue_xy = self._update_queue(now, fresh_ids)
+            if queue_xy:
+                groups.append(self._build_queue_zone(queue_xy))
+                pair_ids = [t for t in fresh_ids
+                            if not self._near_queue(self.tracks[t].x, self.tracks[t].y)]
+                for pair_key, anchor in list(self.pair_anchors.items()):
+                    if (self._near_queue(anchor[0], anchor[1])
+                            and self._near_queue(anchor[2], anchor[3])):
+                        self._drop_pair(pair_key, "members are part of the queue")
+        for i, id_a in enumerate(pair_ids):
+            for id_b in pair_ids[i + 1:]:
                 ta, tb = self.tracks[id_a], self.tracks[id_b]
                 dist = math.hypot(ta.x - tb.x, ta.y - tb.y)
                 pair_key = frozenset((id_a, id_b))
@@ -819,6 +849,116 @@ class SocialGroupDetector(Node):
 
         groups.extend(self._lidar_held_groups(now, handled_pairs))
         self._publish_groups(groups)
+
+    # -------------------------------------------------------------
+    # Queue detection (queue_detection:=true)
+    # -------------------------------------------------------------
+    def _near_queue(self, x, y):
+        return self.queue_hold is not None and any(
+            math.hypot(x - qx, y - qy) <= QUEUE_HOLD_MATCH_RADIUS
+            for qx, qy in self.queue_hold["xy"])
+
+    def _detect_queue(self, fresh_ids):
+        """Longest run of >= QUEUE_MIN_MEMBERS near-stationary people on one
+        line with regular spacing, as [(x, y), ...] ordered along the line,
+        or None. Unlike the original it does not need EVERY person in view
+        to be in the queue: each pair of people proposes a line, and the
+        best run on any of them wins."""
+        pts = []
+        for tid in fresh_ids:
+            t = self.tracks[tid]
+            if math.hypot(t.vx, t.vy) > QUEUE_MAX_SPEED:
+                continue
+            # One person can hold two track ids for a moment: keep one.
+            if any(math.hypot(t.x - px, t.y - py) < QUEUE_MIN_SPACING for px, py in pts):
+                continue
+            pts.append((t.x, t.y))
+        if len(pts) < QUEUE_MIN_MEMBERS:
+            return None
+        best = None
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                dx, dy = pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]
+                d = math.hypot(dx, dy)
+                if d < 1e-6:
+                    continue
+                ux, uy = dx / d, dy / d
+                on_line = []
+                for x, y in pts:
+                    rx, ry = x - pts[i][0], y - pts[i][1]
+                    if abs(-rx * uy + ry * ux) <= QUEUE_MAX_PERP_DEV:
+                        on_line.append((rx * ux + ry * uy, x, y))
+                on_line.sort()
+                run = [on_line[0]]
+                runs = [run]
+                for p in on_line[1:]:
+                    if p[0] - run[-1][0] <= QUEUE_MAX_SPACING:
+                        run.append(p)
+                    else:
+                        run = [p]
+                        runs.append(run)
+                longest = max(runs, key=len)
+                if len(longest) >= QUEUE_MIN_MEMBERS and (
+                        best is None or len(longest) > len(best)):
+                    best = longest
+        return [(x, y) for _, x, y in best] if best else None
+
+    def _update_queue(self, now, fresh_ids):
+        """Detect, then hold. The camera rarely sees the whole line at once
+        (its field of view is ~72 deg, and the robot turns away to go round),
+        so the longest roster seen is kept and held for as long as at least
+        QUEUE_HOLD_MIN_VISIBLE of its members are still there, by camera
+        track or LIDAR return, up to LIDAR_HOLD_MAX_S without a camera
+        re-detection. Returns the member positions or None."""
+        det = self._detect_queue(fresh_ids)
+        hold = self.queue_hold
+        if det is not None:
+            same = hold is not None and sum(
+                1 for x, y in det if self._near_queue(x, y)) >= QUEUE_HOLD_MIN_VISIBLE
+            if hold is None or not same or len(det) >= len(hold["xy"]):
+                if hold is None or not same or len(det) != len(hold["xy"]):
+                    self.get_logger().info(
+                        f"Queue of {len(det)} detected: "
+                        + " ".join(f"({x:.2f},{y:.2f})" for x, y in det))
+                self.queue_hold = {"xy": det, "time": now, "miss": 0}
+            else:
+                hold["time"] = now      # a shorter view of the same queue
+        hold = self.queue_hold
+        if hold is None:
+            return None
+        if now - hold["time"] > LIDAR_HOLD_MAX_S:
+            self.get_logger().info(
+                f"Queue cleared: no camera detection for {now - hold['time']:.1f}s")
+            self.queue_hold = None
+            return None
+        seen = 0
+        for qx, qy in hold["xy"]:
+            cam = any(now - s.last_update <= FRESH_POSITION_TIMEOUT
+                      and math.hypot(s.x - qx, s.y - qy) <= QUEUE_HOLD_MATCH_RADIUS
+                      for s in self.tracks.values())
+            if cam or self.lidar_occupied(qx, qy)[0]:
+                seen += 1
+        if seen < QUEUE_HOLD_MIN_VISIBLE:
+            hold["miss"] += 1
+            if hold["miss"] >= QUEUE_HOLD_MISS_LIMIT:
+                self.get_logger().info(
+                    f"Queue cleared: only {seen}/{len(hold['xy'])} members still seen")
+                self.queue_hold = None
+                return None
+        else:
+            hold["miss"] = 0
+        return hold["xy"]
+
+    def _build_queue_zone(self, xy):
+        (x0, y0), (x1, y1) = xy[0], xy[-1]
+        span = math.hypot(x1 - x0, y1 - y0)
+        axis_x, axis_y = (x1 - x0) / span, (y1 - y0) / span
+        # Member "ids" are positions along the line: track ids churn, and the
+        # consumers use the coordinates (field 9), not the ids.
+        # Buffer = ZONE_BUFFER (wide): go around a queue, never through it.
+        return ("queue_1", "queue", (x0 + x1) / 2.0, (y0 + y1) / 2.0,
+                axis_x, axis_y, span / 2.0 + ZONE_BUFFER, ZONE_BUFFER,
+                list(range(len(xy))), list(xy), ZONE_BUFFER)
 
     class _AnchorTrack:
         """Minimal stand-in for TrackState so the existing zone builders

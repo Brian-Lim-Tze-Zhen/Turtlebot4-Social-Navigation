@@ -257,6 +257,12 @@ private:
     float last_x{0.0f};      // last raw position of this track (lane_jump_reset_)
     float last_y{0.0f};
     bool has_last{false};
+    // First sight under test (lane_first_sight_confirm_s_): where and when
+    // the track first appeared ahead, before any lane is given.
+    bool pending{false};
+    float pend_x{0.0f};
+    float pend_y{0.0f};
+    double pend_t{0.0};
   };
   std::unordered_map<int, LaneAxis> lane_axes_;
   // While a walker is in its lane, the critic takes the walker to be ON the
@@ -328,6 +334,22 @@ private:
   float side_ambiguous_offset_{0.0f};
   float lane_first_sight_half_angle_{0.52f};   // rad (~30 deg)
   float lane_first_sight_range_{9.0f};         // m
+  // Standing people and first sight (4 Oct 2026). The first-sight lane made
+  // the robot swerve for people who were only standing: a pair 4.6 m ahead
+  // at the start, and the same pair standing beyond the goal later (bag
+  // headon_blockedbeep_pair_my1, three swerves, one with a turn-round).
+  // Both default to off, which leaves first sight as it was.
+  //  - lane_first_sight_confirm_s_ > 0: a new track ahead gets no lane at
+  //    once. It is watched for this long, and gets the first-sight lane only
+  //    if it has come at least lane_first_sight_min_move_ closer to the
+  //    robot along the person-robot line by its own movement.
+  //  - lane_ignore_beyond_goal_: no first-sight lane for a person farther
+  //    from the robot than the goal by lane_beyond_goal_margin_ or more.
+  //  A track the KF reports as closing still gets its lane in either case.
+  float lane_first_sight_confirm_s_{0.0f};
+  float lane_first_sight_min_move_{0.25f};     // m
+  bool lane_ignore_beyond_goal_{false};
+  float lane_beyond_goal_margin_{0.5f};        // m
   double lane_timeout_{3.0};            // s without the track before forgetting
   float pass_side_min_closing_{0.5f};   // m/s toward the robot
 

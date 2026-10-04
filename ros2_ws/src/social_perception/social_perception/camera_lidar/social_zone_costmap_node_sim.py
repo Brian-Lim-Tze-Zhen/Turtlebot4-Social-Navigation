@@ -347,6 +347,28 @@ class SocialZoneCostmapNode(Node):
             # wrong for the other. The connecting line between two
             # people is the same geometric thing either way.
             mem = parts[9].split("|")
+            if group_type == "queue" and len(mem) >= 3:
+                # QUEUE (4 Oct 2026): N people in a line, in order. Painted
+                # as N-1 neighbouring pairs with the wide ladder (gap 90,
+                # halo, lethal core), so every gap in the line is closed and
+                # the planner goes round an end. Only published when the
+                # detector runs with queue_detection:=true.
+                pts = [tuple(float(v) for v in m.split(";")) for m in mem]
+                now_s = self.get_ros_time_seconds()
+                for k in range(len(pts) - 1):
+                    (qax, qay), (qbx, qby) = pts[k], pts[k + 1]
+                    qsep = math.hypot(qbx - qax, qby - qay)
+                    if qsep < 1e-6:
+                        continue
+                    self.zones[f"{group_id}#{k}"] = {
+                        "cx": (qax + qbx) / 2.0, "cy": (qay + qby) / 2.0,
+                        "ax": (qbx - qax) / qsep, "ay": (qby - qay) / qsep,
+                        "separation": qsep,
+                        "member_a": (qax, qay), "member_b": (qbx, qby),
+                        "buffer": NOMINAL_ZONE_BUFFER, "narrow": False,
+                        "type": group_type, "last_seen": now_s,
+                    }
+                return
             if len(mem) != 2:
                 return
             ax_, ay_ = (float(v) for v in mem[0].split(";"))

@@ -75,6 +75,10 @@ void SocialCritic::initialize()
   getParam(marker_topic_, "marker_topic", std::string("/social_critic/lane_markers"));
   getParam(lane_first_sight_half_angle_, "lane_first_sight_half_angle", 0.52f);
   getParam(lane_first_sight_range_, "lane_first_sight_range", 9.0f);
+  getParam(lane_first_sight_confirm_s_, "lane_first_sight_confirm_s", 0.0f);
+  getParam(lane_first_sight_min_move_, "lane_first_sight_min_move", 0.25f);
+  getParam(lane_ignore_beyond_goal_, "lane_ignore_beyond_goal", false);
+  getParam(lane_beyond_goal_margin_, "lane_beyond_goal_margin", 0.5f);
 
   // Reuse the costmap's TF buffer rather than starting a second
   // listener inside controller_server.
@@ -127,6 +131,12 @@ void SocialCritic::initialize()
     pass_side_weight_ > 0.0f ? "on" : "off", pass_side_weight_,
     pass_side_margin_, pass_side_range_, pass_side_min_closing_,
     pass_side_max_offset_, lane_on_first_sight_s_, no_retreat_weight_);
+  RCLCPP_INFO(
+    logger_,
+    "SocialCritic: first sight needs %.2f m of approach within %.1f s (0 s = "
+    "lane at once), people beyond the goal %s",
+    lane_first_sight_min_move_, lane_first_sight_confirm_s_,
+    lane_ignore_beyond_goal_ ? "ignored" : "not ignored");
 }
 
 // /social_groups, from social_group_detector_node_lidarhold_sim.py:
@@ -601,9 +611,27 @@ void SocialCritic::score(CriticData & data)
         const float d = std::sqrt(ex * ex + ey * ey);
         float off = std::atan2(ey, ex) - robot_yaw0;
         off = std::atan2(std::sin(off), std::cos(off));
-        const bool ahead = lane_on_first_sight_s_ > 0.0f &&
+        bool ahead = lane_on_first_sight_s_ > 0.0f &&
           d < lane_first_sight_range_ &&
           std::fabs(off) < lane_first_sight_half_angle_;
+        if (ahead && lane_ignore_beyond_goal_) {
+          const float gx = static_cast<float>(data.goal.position.x) - robot_x0;
+          const float gy = static_cast<float>(data.goal.position.y) - robot_y0;
+          if (d > std::sqrt(gx * gx + gy * gy) + lane_beyond_goal_margin_) {
+            ahead = false;   // beyond the goal: the robot never gets there
+          }
+        }
+        if (ahead && !t.closing && lane_first_sight_confirm_s_ > 0.0f) {
+          // Watch it first (see lane_first_sight_confirm_s_): no lane yet.
+          LaneAxis seen = newLane(t, false);
+          seen.first_seen = -1.0;
+          seen.pending = true;
+          seen.pend_x = t.x;
+          seen.pend_y = t.y;
+          seen.pend_t = now_s;
+          lane_axes_.emplace(t.track_id, seen);
+          continue;
+        }
         if (!t.closing && !ahead) {
           // Remember that this track has been seen, so it is not treated as
           // "new" later: an entry with no lane until it closes.
@@ -619,6 +647,17 @@ void SocialCritic::score(CriticData & data)
         // Seen earlier without a lane (or lane dropped) and now closing:
         // freeze the lane afresh from where the robot is now.
         it->second = newLane(t, false);
+      } else if (it->second.pending &&
+        now_s - it->second.pend_t >= lane_first_sight_confirm_s_)
+      {
+        // (t.ux, t.uy) points from the person to the robot.
+        const float moved = (t.x - it->second.pend_x) * t.ux +
+          (t.y - it->second.pend_y) * t.uy;
+        if (moved >= lane_first_sight_min_move_) {
+          it->second = newLane(t, true);   // the first-sight lane, a little late
+        } else {
+          it->second.pending = false;      // standing: no lane unless it closes
+        }
       }
       it->second.stamp = now_s;
       it->second.last_x = t.x;   // still the raw estimate here

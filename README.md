@@ -58,6 +58,10 @@ After launch, in RViz: use **2D Pose Estimate** to set the robot's initial
 pose on the map before sending navigation goals (required since this runs
 in AMCL localization mode, not SLAM).
 
+**To try the scenarios with one command each** (head-on, blocked corridor,
+conversation wide and narrow, queue), see [SCENARIOS.md](SCENARIOS.md). No
+initial pose or goal has to be set by hand there.
+
 ## Ablation F — conversation group, wide (open space)
 
 Condition F gives a detected conversation pair a graded social zone,
@@ -281,8 +285,8 @@ confirms the critic as the sole cause of the stall.
 
 **Caveats**
 
-- Trial 4 has incomplete provenance (no `world_used.sdf`); its person poses
-  fell back to the known (3.0, ±0.75).
+- Trial 4's provenance was added after the run (`PROVENANCE_POSTHOC.txt`,
+  24 Sep), including `world_used.sdf`; it was not snapshotted at record time.
 - The stall comparison is n = 1.
 - AMCL shows a consistent along-track lag in the corridor (worst error
   −0.223 ± 0.068 m, always negative x). The lateral error in the gap stays
@@ -595,6 +599,165 @@ About 2 s remain once B is seen; the robot cannot move the missing 0.3 –
   diverged from this one and needs the lane code merged by hand.
 - About 1 launch in 4 fails at Nav2 startup; the trial script retries.
 
+## One-command scenarios, rerun and additions (4 Oct 2026)
+
+Branch `conversation-rerun`, made from `headon-avoidance`. The originals are
+still available under the tags `thesis-conv-F-original` and
+`thesis-headon-avoidance-2026-10-04`. Every new parameter defaults to off, so
+the configs and results above are unchanged unless a new config or option is
+used.
+
+### Running a scenario
+
+    ros2 launch /root/thesis_social_navigation_ws/launch/scenario.launch.py scenario:=<name>
+
+with `<name>` one of `headon`, `headon_blocked`, `conversation_wide`,
+`conversation_narrow`, `queue`. The launch file wraps `run_scenario.sh`, which
+picks the world, config and trial script, retries up to three times if the
+stack fails to start, and prints a result summary. [SCENARIOS.md](SCENARIOS.md)
+is the guide for someone trying it for the first time.
+
+The conversation trials, which were run by hand on 24 Sep (one terminal per
+step), now have a trial script of their own, `run_conv_F_trial.sh`
+(`CASE=wide|narrow|queue`), built on the head-on one.
+
+### Conversation, rerun on the current code
+
+The head-on work changed files the conversation scenario shares (MPPI tuning
+in the F config, the perception nodes, the SocialCritic build). Re-analysing
+the ten 24 Sep bags reproduced the table above exactly. Ten fresh trials on
+the current code, n = 5 each:
+
+| Metric | Wide, 24 Sep | Wide, 4 Oct | Narrow, 24 Sep | Narrow, 4 Oct |
+|---|---|---|---|---|
+| Goal reached | 5 / 5 | 5 / 5 | 5 / 5 | 5 / 5 |
+| Route | around, +y in 5 | around, −y in 4, +y in 1 | through the gap | through the gap |
+| Time to goal | 27.5 ± 0.4 s | 25.5 ± 1.3 s | 23.4 ± 0.5 s | 21.3 ± 0.1 s |
+| Min centre distance (GT) | 0.851 ± 0.014 m | 0.907 ± 0.055 m | 0.717 ± 0.033 m | 0.697 ± 0.018 m |
+| Stopped / spin time | 0 / 0 s | 0 / 0 s | 0 / 0 s | 0 / 0 s |
+| Classification | 100 % wide | 100 % wide | 100 % narrow | 100 % narrow |
+| RTF | 0.52 ± 0.04 | 0.69 ± 0.01 | 0.55 ± 0.02 | 0.69 ± 0.01 |
+
+The behaviour holds. The robot is about 2 s faster and, in the wide case, now
+mostly passes on the other side. The 4 Oct trials were started by the script
+and ran at a higher real-time factor, so the comparison is not like for like
+in every respect. Bags `conv_F_wide_rerun_trial1..5`,
+`conv_F_narrow_rerun_trial1..5`.
+
+`aggregate_F_trials.py` gives 27.2 ± 0.6 s for the 24 Sep wide time, not
+27.5 ± 0.4 s: in wide trial 2 the ground-truth recording starts with the
+robot already moving, so the aggregator starts its clock late. The per-trial
+figure (from `analyse_F_narrow.py`, which takes the start from `/odom`) is the
+one reported.
+
+### Blocked by people: stop, beep, continue
+
+When people stand in the way and the robot cannot get through, it stops,
+beeps every 3 s until they have moved, and then drives on to the same goal.
+
+- `camera_lidar/blocked_person_beep_node_sim.py` beeps when a goal is running,
+  the robot's position has stayed within 0.5 m for 4 s, and a person is in
+  front (a tracked person within 1.5 m in the last 5 s, or a LiDAR return off
+  the static map within 1.0 m and ±30° ahead in the last 2 s; the same two
+  tests as `beep_retry_node_sim.py`). With `hold:=true` it also holds the
+  robot at zero velocity through a `BlockedHold` stop zone in the collision
+  monitor, and releases it when no person has been in front for the memory
+  time. `beep_retry_node_sim.py` runs alongside it to resend the goal if Nav2
+  aborts first.
+- Config `config/social_nav2_headon_F_hwreq_block_blockedhold_sim.yaml`: the
+  head-on avoidance config plus that zone and the two SocialCritic parameters
+  below.
+- World `corridor_two_human.sdf`: the head-on corridor with a second person.
+  `run_headon_F_trial.sh` gained `BLOCKED_BEEP`, `BLOCKED_HOLD` and
+  `PERSON_START_DELAY` (people stand for that long, then walk).
+
+Two people standing across the 2.5 m corridor, 1.0 m apart, then walking away:
+
+| Run | People stand for | Stopped | Beeps | Closest person | Goal |
+|---|---|---|---|---|---|
+| `headon_blockedhold_pair_pilot1` | 30 s | 20.3 s | 7 | 1.12 m | reached |
+| `demo_headon_blocked_20261004_130148` | 30 s | 21.8 s | 8 | 1.12 m | reached |
+| `demo_headon_blocked_20261004_131356` | 20 s | 11.9 s | 4 | 1.14 m | reached |
+
+The robot does not pass between them: that would put it 0.50 m from each
+person, and the SocialCritic keeps 0.86 m. The pair is classed "wide" (0.5 m
+free beyond each person), so the 0.60 m relaxation for narrow groups does not
+apply. The global planner did produce paths through the middle; the
+controller refused them.
+
+Without the hold (`BLOCKED_HOLD=false`) the robot stays in place but keeps
+turning and creeping sideways while Nav2 looks for a way round.
+
+### No swerve for people who are only standing
+
+The first-sight lane rule (`lane_on_first_sight_s`) treated every newly seen
+person ahead as an approaching walker for 1.5 s. In a blocked-corridor run
+the robot swerved three times for people who were standing, once with a
+turn-round (bag `headon_blockedbeep_pair_my1`). Two SocialCritic parameters,
+both off by default:
+
+- `lane_first_sight_confirm_s` (0.5 in the new config): a new person ahead
+  gets the first-sight lane only after coming `lane_first_sight_min_move`
+  (0.25 m) closer within that time.
+- `lane_ignore_beyond_goal`: no first-sight lane for a person farther away
+  than the goal.
+
+With them the blocked-corridor approach is straight (no lane decisions
+logged, lateral deviation ≤ 0.11 m). One centred walker at 1.2 m/s with the
+new config: 0.778, 0.813, 0.841 and 0.777 m, no stop (n = 4), inside the
+earlier 0.75 – 0.86 m. The lane now starts at about 6.7 m, not 7.1 m.
+
+### Queue
+
+`camera_lidar/social_group_detector_node_lidarhold_sim.py` has a
+`queue_detection` parameter (default off): three or more near-stationary
+people on one line, 0.3 – 1.5 m apart and within 0.4 m of the line, become
+one `queue` group and are no longer paired. The thresholds are those of the
+August detector (`Queue/group_formation_detector.py`). The longest roster
+seen is held while at least two members are still seen by camera or LiDAR,
+because the camera does not see the whole line once the robot turns away.
+`social_zone_costmap_node_sim.py` paints a queue as neighbouring pairs with
+the wide ("go around") costs, which closes every gap in the line.
+
+World `queue_test.sdf`: four people in a line at x = 3, 1.2 m apart.
+
+| Goal | Stack | Runs | Route | Closest person | Stops |
+|---|---|---|---|---|---|
+| (6, 0) | queue detection | 1 | around the head | 0.878 m | 0 s |
+| (6, −3) | queue detection | 4 | around the tail | 1.03 – 1.13 m | 0 s |
+| (6, 0) | pairs only | 1 | around the head | 0.940 m | 0 s |
+| (6, −3) | pairs only | 1 | around the tail | 0.943 m | 0 s |
+
+With queue detection the detector reports one four-member queue for the whole
+run. Without it, it reports neighbouring `side_by_side` pairs that come and
+go. The pairs-only stack did not cut through the line in its two runs either,
+so the port gives a stable group and full coverage of the line, not a fix for
+a failure that was reproduced.
+
+### Limits
+
+- The blocked-corridor result is three runs. The path where Nav2 aborts and
+  the retry node resends the goal has not been exercised.
+- A standing person briefly read as approaching by the tracker can still get
+  a lane; that is not specifically handled.
+- In one head-on run with the delayed lane the walker's sideways offset read
+  −1.55 m (earlier range −0.22 to +0.50 m); the pass itself was 0.813 m.
+- The queue is tested in one open-space world with four static people.
+- An attempt at a stop zone on the person cloud
+  (`config/social_nav2_headon_F_hwreq_block_stopbeep_sim.yaml`,
+  `camera_lidar/person_stop_beep_node_sim.py`) never triggered in four runs:
+  a close walker is beside the turned robot, not in front, and often not in
+  the cloud at all. It is kept but not used.
+- Start-up failures (Nav2 lifecycle hang, filter info server not active,
+  goal never acknowledged) invalidated several runs on 4 Oct. One queue run
+  went the whole trial with no social zone in the planner's costmap;
+  `run_conv_F_trial.sh` now checks the filter info server before the goal.
+  `run_headon_F_trial.sh` does not have that check.
+- The group detector and zone node in the sim are the 23 Sep versions and
+  differ from the hardware's 1 Oct versions (wide/narrow test, LiDAR hold,
+  wide-case zone).
+- None of this is ported to the real robot.
+
 ## Custom Gazebo worlds/models - known issue and workaround
 
 `turtlebot4_gz_bringup`'s launch file does not reliably resolve
@@ -637,4 +800,8 @@ intact per `model.config`.
                            (temp_models/ is excluded — see Dockerfile to regenerate)
       behavior_trees/      Custom Nav2 BT XMLs
       run_sim.sh           Full simulation launch script
+      run_scenario.sh      One command per demo scenario (see SCENARIOS.md);
+                           launch/scenario.launch.py wraps it
+      run_headon_F_trial.sh, run_conv_F_trial.sh
+                           One complete trial: launch, goal, bag, teardown
       record_trial.sh      Bag recording with provenance snapshots
