@@ -1,0 +1,7 @@
+trial,min_distance,path_length,straight_line,path_ratio,max_lateral_dev,commit_dist,dev_at_min,duration_s,mean_speed,n_odom,n_person
+queue_E_grouplayer_on_t01,1.1390,10.6267,8.4652,1.2553,2.5284,4.4451,2.5024,40.8540,0.2601,2534,409
+queue_E_grouplayer_on_t02,1.1280,10.7708,8.5092,1.2658,2.5536,4.4954,2.5279,46.6290,0.2310,2892,453
+queue_E_grouplayer_on_t03,1.1215,10.7627,8.4461,1.2743,2.5068,4.1836,2.4857,39.4830,0.2726,2449,401
+queue_E_grouplayer_off_t01,0.5639,9.0408,8.3822,1.0786,0.7344,1.9485,0.7041,32.0670,0.2819,1989,323
+queue_E_grouplayer_off_t02,0.5088,8.9301,8.3420,1.0705,0.7025,1.9776,0.6263,42.2430,0.2114,2620,419
+queue_E_grouplayer_off_t03,0.5118,9.1301,8.4215,1.0841,0.7313,2.0348,0.6443,31.0470,0.2941,1926,315

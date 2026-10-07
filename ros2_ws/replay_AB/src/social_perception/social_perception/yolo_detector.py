@@ -4,9 +4,9 @@ import math
 import cv2
 import numpy as np
 import os
-import torch #(gemini to uncomment)
+import torch
 import subprocess
-torch.set_num_threads(2)  # or 1 — start low and measure (gemini to uncomment)
+torch.set_num_threads(2)  # or 1 — start low and measure
 
 import rclpy
 from rclpy.node import Node
@@ -344,7 +344,7 @@ class YoloByteTrackPositionNode(Node):
                 classes=[0],
                 conf=0.70,
                 imgsz=320,
-                device ="cpu", # Use 0 for GPU, or "cpu" if running on CPU (gemini)
+                device ="cpu", # Use 0 for GPU, or "cpu" if running on CPU
                 verbose=False
             )
         inference_ms = (time.monotonic() - t0) * 1000.0

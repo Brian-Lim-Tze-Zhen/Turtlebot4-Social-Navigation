@@ -110,7 +110,7 @@ controller_server:
       iteration_count: 1
       prune_distance: 2.8 # was 1.7 — let the followers see the bend (finding #1)
       transform_tolerance: 0.1
-      temperature: 0.30 # Was 0.30 (gemini fix for hesitation)
+      temperature: 0.30 # Was 0.30
       gamma: 0.015
       motion_model: "DiffDrive"
       visualize: true
@@ -264,7 +264,7 @@ controller_server:
       # CostCritic:
       #   enabled: true
       #   cost_power: 1
-      #   cost_weight: 12.0 # Increase slightly relative to PathAlign (gemini)
+      #   cost_weight: 12.0 # Increase slightly relative to PathAlign
       #   critical_cost: 300.0
       #   consider_footprint: true
       #   collision_cost: 1000000.0
@@ -278,7 +278,7 @@ controller_server:
         # path that runs directly through the person's lane, fighting
         # the obstacle cost. 8.0 lets lateral deviation win when the
         # costmap says the corridor is occupied.
-        cost_weight: 4.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking (gemini)
+        cost_weight: 4.0 # Lowered (e.g. from 8.0/14.0) so costmap avoidance outweighs path sticking
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -314,9 +314,9 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
-      width: 7  # <--- Change from 5 (gives 3.5m radius from center)(gemini)
+      width: 7  # <--- Change from 5 (gives 3.5m radius from center)
       # width: 3
-      height: 7  # <--- Change from 5 (gives 3.5m radius from center)(gemini)
+      height: 7  # <--- Change from 5 (gives 3.5m radius from center)
       # height: 3
       resolution: 0.06
       footprint: "[[ 0.189,  0.000],
@@ -367,9 +367,9 @@ local_costmap:
           marking: true
           data_type: "PointCloud2"
           clearing: true
-          obstacle_max_range: 4.0 # <--- Change from 5.0 (gemini)
+          obstacle_max_range: 4.0 # <--- Change from 5.0
           obstacle_min_range: 0.0
-          raytrace_max_range: 4.0 # <--- Change from 5.0 (gemini)
+          raytrace_max_range: 4.0 # <--- Change from 5.0
           raytrace_min_range: 0.0
 
       static_layer:

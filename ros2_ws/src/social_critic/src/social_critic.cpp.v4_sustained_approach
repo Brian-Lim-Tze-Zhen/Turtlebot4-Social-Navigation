@@ -82,6 +82,9 @@ void SocialCritic::initialize()
   getParam(lane_skip_group_members_, "lane_skip_group_members", false);
   getParam(lane_group_match_radius_, "lane_group_match_radius", 0.0);
   getParam(lane_group_hold_s_, "lane_group_hold_s", 0.0);
+  getParam(lane_approach_window_s_, "lane_approach_window_s", 0.0f);
+  getParam(lane_approach_min_move_, "lane_approach_min_move", 0.5f);
+  getParam(lane_approach_consistency_, "lane_approach_consistency", 0.6f);
 
   // Reuse the costmap's TF buffer rather than starting a second
   // listener inside controller_server.
@@ -146,6 +149,10 @@ void SocialCritic::initialize()
   RCLCPP_INFO(
     logger_, "SocialCritic: group skip match radius %.2f m (0 = match radius of the group), hold %.1f s",
     lane_group_match_radius_, lane_group_hold_s_);
+  RCLCPP_INFO(
+    logger_, "SocialCritic: lane needs a sustained approach: %s (%.2f m within %.2f s, %.0f %% of the steps towards the robot)",
+    lane_approach_window_s_ > 0.0f ? "on" : "off", lane_approach_min_move_, lane_approach_window_s_,
+    100.0f * lane_approach_consistency_);
 }
 
 // /social_groups, from social_group_detector_node_lidarhold_sim.py:
@@ -229,6 +236,35 @@ bool SocialCritic::isGroupMember(
     }
   }
   return false;
+}
+
+bool SocialCritic::approachConfirmed(int track_id, float ux, float uy) const
+{
+  auto it = approach_hist_.find(track_id);
+  if (it == approach_hist_.end() || it->second.size() < 3) {
+    return false;
+  }
+  const auto & h = it->second;
+  if (h.back().t - h.front().t < 0.8 * lane_approach_window_s_) {
+    return false;   // not watched long enough
+  }
+  // (ux, uy) points from the person to the robot.
+  const float moved = (h.back().x - h.front().x) * ux + (h.back().y - h.front().y) * uy;
+  if (moved < lane_approach_min_move_) {
+    return false;
+  }
+  int towards = 0, steps = 0;
+  for (size_t k = 1; k < h.size(); ++k) {
+    const float s = (h[k].x - h[k - 1].x) * ux + (h[k].y - h[k - 1].y) * uy;
+    if (std::fabs(s) < 1e-4f) {
+      continue;   // repeated message, no new measurement
+    }
+    ++steps;
+    if (s > 0.0f) {
+      ++towards;
+    }
+  }
+  return steps > 0 && static_cast<float>(towards) >= lane_approach_consistency_ * static_cast<float>(steps);
 }
 
 // Message format produced by human_kf_predictor and consumed by
@@ -499,6 +535,29 @@ void SocialCritic::score(CriticData & data)
       t.ux = ex / d;
       t.uy = ey / d;
       t.closing = (t.vx * t.ux + t.vy * t.uy) > pass_side_min_closing_;
+      if (lane_approach_window_s_ > 0.0f && t.track_id >= 0) {
+        // Sustained approach (see lane_approach_window_s_): history of the
+        // measured positions of this track, then the test.
+        const double hs = node->now().seconds();
+        auto & h = approach_hist_[t.track_id];
+        if (!t.coasted) {
+          h.push_back({hs, t.x, t.y});
+        }
+        while (!h.empty() && hs - h.front().t > lane_approach_window_s_) {
+          h.pop_front();
+        }
+        t.closing = t.closing && approachConfirmed(t.track_id, t.ux, t.uy);
+      }
+      if (lane_approach_window_s_ > 0.0f) {
+        const double hs = node->now().seconds();
+        for (auto ah = approach_hist_.begin(); ah != approach_hist_.end(); ) {
+          if (ah->second.empty() || hs - ah->second.back().t > lane_approach_window_s_ + 2.0) {
+            ah = approach_hist_.erase(ah);
+          } else {
+            ++ah;
+          }
+        }
+      }
       // lane_skip_group_members_: the speed of a standing member is jitter
       // (its position estimate jumps by up to 0.3 m and the KF reports
       // 0.3-0.4 m/s for a moment), so a group member is never "closing".
@@ -710,7 +769,9 @@ void SocialCritic::score(CriticData & data)
         // (t.ux, t.uy) points from the person to the robot.
         const float moved = (t.x - it->second.pend_x) * t.ux +
           (t.y - it->second.pend_y) * t.uy;
-        if (moved >= lane_first_sight_min_move_) {
+        const bool sustained = lane_approach_window_s_ <= 0.0f ||
+          approachConfirmed(t.track_id, t.ux, t.uy);
+        if (moved >= lane_first_sight_min_move_ && sustained) {
           it->second = newLane(t, true);   // the first-sight lane, a little late
         } else {
           it->second.pending = false;      // standing: no lane unless it closes

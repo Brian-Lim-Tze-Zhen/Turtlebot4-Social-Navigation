@@ -1,0 +1,40 @@
+Start protocol of the A-E head-on ablation trials, read from the bags on 4 Oct 2026.
+Script: analysis/headon_ablation_AE_protocol.py (positions in the map frame; walker from /person_ground_truth)
+
+a_nolayer_t01: robot start (-1.82,0.04) end (8.51,0.01); person (8.00,0.00) -> (-3.00,0.00); person starts +2.9 s after the robot; robot then at (-0.93,-0.03) moving 0.30 m/s; gap 8.66 m
+a_nolayer_t02: robot start (-1.83,0.09) end (8.47,-0.00); person (7.82,0.00) -> (-2.98,0.00); person starts +2.6 s after the robot; robot then at (-1.02,0.10) moving 0.24 m/s; gap 8.60 m
+a_nolayer_t03: robot start (-1.92,0.05) end (8.53,-0.05); person (8.00,0.00) -> (-3.00,0.00); person starts +1.3 s after the robot; robot then at (-1.49,0.00) moving 0.30 m/s; gap 9.36 m
+a_nolayer_t04: robot start (-1.87,0.07) end (8.47,-0.00); person (7.48,0.00) -> (-3.00,0.00); person starts +3.1 s after the robot; robot then at (-0.89,-0.01) moving 0.30 m/s; gap 8.13 m
+a_nolayer_t05: robot start (-1.89,0.03) end (8.41,0.05); person (8.00,0.00) -> (-2.98,0.00); person starts +1.9 s after the robot; robot then at (-1.30,-0.02) moving 0.29 m/s; gap 9.12 m
+a_nolayer_t06: robot start (-1.93,0.02) end (8.70,-0.02); person (7.95,0.00) -> (-3.00,0.00); person starts +1.6 s after the robot; robot then at (-1.43,-0.03) moving 0.30 m/s; gap 8.95 m
+b_critweight20_t01: robot start (-1.90,0.06) end (8.52,-0.02); person (8.00,0.00) -> (-3.00,0.00); person starts +1.8 s after the robot; robot then at (-1.33,-0.01) moving 0.26 m/s; gap 9.10 m
+b_critweight20_t02: robot start (-1.87,0.04) end (8.46,-0.01); person (7.85,0.00) -> (-2.95,0.00); person starts +2.6 s after the robot; robot then at (-1.07,-0.04) moving 0.29 m/s; gap 8.68 m
+b_critweight20_t03: robot start (-1.94,0.04) end (8.51,0.02); person (8.00,0.00) -> (-3.00,0.00); person starts +3.0 s after the robot; robot then at (-0.97,-0.05) moving 0.31 m/s; gap 8.83 m
+b_critweight20_t04: robot start (-1.88,0.01) end (8.53,0.04); person (3.68,0.00) -> (-3.00,0.00); person starts +6.2 s after the robot; robot then at (-0.07,-0.16) moving 0.26 m/s; gap 3.51 m
+b_critweight20_t05: robot start (-1.90,0.04) end (8.51,-0.07); person (8.00,0.00) -> (-3.00,0.00); person starts +1.9 s after the robot; robot then at (-1.28,-0.01) moving 0.30 m/s; gap 9.07 m
+b_critweight20_t06: robot start (-1.91,-0.01) end (8.60,-0.06); person (8.00,0.00) -> (-3.00,0.00); person starts +2.3 s after the robot; robot then at (-1.16,-0.10) moving 0.30 m/s; gap 8.88 m
+c_critweight10_t01: robot start (-1.89,0.01) end (8.62,-0.00); person (7.85,0.00) -> (-2.95,0.00); person starts +2.7 s after the robot; robot then at (-1.03,-0.06) moving 0.31 m/s; gap 8.64 m
+c_critweight10_t02: robot start (-1.87,0.00) end (8.40,-0.04); person (8.00,0.00) -> (-3.00,0.00); person starts +2.0 s after the robot; robot then at (-1.23,-0.06) moving 0.30 m/s; gap 9.12 m
+c_critweight10_t03: robot start (-1.85,0.01) end (8.47,0.03); person (7.85,0.00) -> (-2.95,0.00); person starts +2.0 s after the robot; robot then at (-1.20,-0.05) moving 0.30 m/s; gap 8.81 m
+c_critweight10_t04: robot start (-1.88,0.04) end (8.51,-0.03); person (8.00,0.00) -> (-3.00,0.00); person starts +2.4 s after the robot; robot then at (-1.10,-0.02) moving 0.24 m/s; gap 8.97 m
+c_critweight10_t05: robot start (-1.94,0.04) end (8.42,-0.01); person (8.00,0.00) -> (-3.00,0.00); person starts +2.7 s after the robot; robot then at (-1.08,0.01) moving 0.28 m/s; gap 8.80 m
+c_critweight10_t06: robot start (-1.88,0.02) end (8.43,-0.03); person (8.00,0.00) -> (-3.00,0.00); person starts +3.4 s after the robot; robot then at (-0.79,-0.06) moving 0.32 m/s; gap 8.54 m
+d_critweight10_socialcritic_on_t01: robot start (-1.87,0.05) end (8.51,-0.05); person (7.97,0.00) -> (-3.00,0.00); person starts +2.3 s after the robot; robot then at (-1.14,-0.02) moving 0.30 m/s; gap 8.77 m
+d_critweight10_socialcritic_on_t02: robot start (-1.82,-0.01) end (8.46,0.02); person (7.95,0.00) -> (-3.00,0.00); person starts +2.9 s after the robot; robot then at (-0.92,-0.07) moving 0.30 m/s; gap 8.63 m
+d_critweight10_socialcritic_on_t03: robot start (-1.90,0.03) end (8.48,-0.04); person (7.91,0.00) -> (-3.00,0.00); person starts +2.4 s after the robot; robot then at (-1.12,-0.05) moving 0.31 m/s; gap 8.80 m
+d_critweight10_socialcritic_on_t04: robot start (-1.88,0.04) end (8.46,-0.01); person (7.92,0.00) -> (-3.00,0.00); person starts +1.0 s after the robot; robot then at (-1.52,-0.00) moving 0.30 m/s; gap 9.21 m
+d_critweight10_socialcritic_on_t05: robot start (-1.91,-0.02) end (8.46,-0.02); person (8.00,0.00) -> (-3.00,0.00); person starts +3.0 s after the robot; robot then at (-0.99,-0.06) moving 0.30 m/s; gap 8.87 m
+d_critweight10_socialcritic_on_t06: robot start (-1.86,0.02) end (8.51,-0.02); person (8.00,0.00) -> (-3.00,0.00); person starts +2.6 s after the robot; robot then at (-1.02,-0.06) moving 0.33 m/s; gap 8.95 m
+e_critweight20_socialcritic_on_t01: robot start (-1.88,-0.00) end (8.62,-0.05); person (7.88,0.00) -> (-3.00,0.00); person starts +2.6 s after the robot; robot then at (-1.07,-0.06) moving 0.31 m/s; gap 8.71 m
+e_critweight20_socialcritic_on_t02: robot start (-1.88,0.07) end (8.42,0.03); person (6.92,0.00) -> (-3.00,0.00); person starts +2.6 s after the robot; robot then at (-1.05,-0.01) moving 0.30 m/s; gap 7.73 m
+e_critweight20_socialcritic_on_t03: robot start (-1.82,0.09) end (8.52,-0.01); person (8.00,0.00) -> (-2.97,0.00); person starts +1.8 s after the robot; robot then at (-1.26,0.03) moving 0.30 m/s; gap 9.09 m
+e_critweight20_socialcritic_on_t04: robot start (-1.86,0.02) end (8.73,-0.07); person (8.00,0.00) -> (-2.98,0.00); person starts +2.7 s after the robot; robot then at (-1.03,-0.07) moving 0.33 m/s; gap 8.85 m
+e_critweight20_socialcritic_on_t05: robot start (-1.92,-0.04) end (8.60,-0.03); person (8.00,0.00) -> (-3.00,0.00); person starts -0.2 s after the robot; robot then at (-1.91,-0.04) moving 0.12 m/s; gap 9.69 m
+e_critweight20_socialcritic_on_t06: robot start (-1.89,0.02) end (8.50,-0.02); person (8.00,0.00) -> (-3.00,0.00); person starts +0.8 s after the robot; robot then at (-1.60,-0.03) moving 0.29 m/s; gap 9.36 m
+--- all 30 trials
+robot start x: -1.88 +/- 0.03 (min -1.94, max -1.82)  y: 0.03 +/- 0.03 (min -0.04, max 0.09)
+robot end   x: 8.51 +/- 0.08 (min 8.40, max 8.73)  y: -0.02 +/- 0.03 (min -0.07, max 0.05)
+person start x: 7.77 +/- 0.79 (min 3.68, max 8.00)  end x: -2.99 +/- 0.02 (min -3.00, max -2.95)
+person starts after robot (s): 2.38 +/- 1.04 (min -0.21, max 6.23)
+robot speed when the person starts (m/s): 0.29 +/- 0.04 (min 0.12, max 0.33)
+robot x when the person starts: -1.13 +/- 0.31 (min -1.91, max -0.07)  gap to person (m): 8.68 +/- 1.02 (min 3.51, max 9.69)

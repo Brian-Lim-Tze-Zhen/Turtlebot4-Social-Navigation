@@ -1,0 +1,23 @@
+Lateral rate of the robot in the head-on trials, read from the bags on 4 Oct 2026.
+Script: analysis/headon_lateral_rate.py (mean rate between 0.1 m and 0.7 m lateral offset; peak over 1 s windows)
+
+  b_critweight20_t01: mean lateral rate from 0.1 to 0.7 m offset 0.17 m/s; peak over 1 s 0.26 m/s; largest offset 1.01 m
+  b_critweight20_t02: mean lateral rate from 0.1 to 0.7 m offset 0.16 m/s; peak over 1 s 0.24 m/s; largest offset 0.99 m
+  b_critweight20_t03: mean lateral rate from 0.1 to 0.7 m offset 0.15 m/s; peak over 1 s 0.24 m/s; largest offset 0.99 m
+  b_critweight20_t04: mean lateral rate from 0.1 to 0.7 m offset 0.18 m/s; peak over 1 s 0.26 m/s; largest offset 0.93 m
+  b_critweight20_t05: mean lateral rate from 0.1 to 0.7 m offset 0.17 m/s; peak over 1 s 0.25 m/s; largest offset 1.01 m
+  b_critweight20_t06: mean lateral rate from 0.1 to 0.7 m offset 0.18 m/s; peak over 1 s 0.26 m/s; largest offset 0.92 m
+B: cloud, open world: mean lateral rate 0.17 +/- 0.01 m/s (n=6), peak 0.25 m/s
+  e_critweight20_socialcritic_on_t01: mean lateral rate from 0.1 to 0.7 m offset 0.16 m/s; peak over 1 s 0.29 m/s; largest offset 1.16 m
+  e_critweight20_socialcritic_on_t02: mean lateral rate from 0.1 to 0.7 m offset 0.18 m/s; peak over 1 s 0.28 m/s; largest offset 1.39 m
+  e_critweight20_socialcritic_on_t03: mean lateral rate from 0.1 to 0.7 m offset 0.16 m/s; peak over 1 s 0.27 m/s; largest offset 1.15 m
+  e_critweight20_socialcritic_on_t04: mean lateral rate from 0.1 to 0.7 m offset 0.17 m/s; peak over 1 s 0.26 m/s; largest offset 1.04 m
+  e_critweight20_socialcritic_on_t05: mean lateral rate from 0.1 to 0.7 m offset 0.17 m/s; peak over 1 s 0.29 m/s; largest offset 1.39 m
+  e_critweight20_socialcritic_on_t06: mean lateral rate from 0.1 to 0.7 m offset 0.19 m/s; peak over 1 s 0.29 m/s; largest offset 1.37 m
+E: cloud and critic, open world: mean lateral rate 0.17 +/- 0.01 m/s (n=6), peak 0.28 m/s
+  headon_hwreq_z5_corr_trial1: mean lateral rate from 0.1 to 0.7 m offset 0.21 m/s; peak over 1 s 0.26 m/s; largest offset 0.90 m
+  headon_hwreq_z5_corr_trial2: mean lateral rate from 0.1 to 0.7 m offset 0.20 m/s; peak over 1 s 0.24 m/s; largest offset 0.90 m
+  headon_hwreq_z5_corr_trial3: mean lateral rate from 0.1 to 0.7 m offset 0.21 m/s; peak over 1 s 0.25 m/s; largest offset 0.86 m
+  headon_hwreq_z5_corr_trial4: mean lateral rate from 0.1 to 0.7 m offset 0.22 m/s; peak over 1 s 0.25 m/s; largest offset 0.91 m
+  headon_hwreq_z5_corr_trial5: mean lateral rate from 0.1 to 0.7 m offset 0.19 m/s; peak over 1 s 0.22 m/s; largest offset 0.86 m
+lane rules, corridor: mean lateral rate 0.20 +/- 0.01 m/s (n=5), peak 0.24 m/s

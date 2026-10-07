@@ -1,0 +1,23 @@
+Queue zone on/off, bags queue_E_grouplayer_{on,off}_t01-03 (16 Aug 2026), recomputed 4 Oct 2026
+Script: analysis/analyse_avoidance.py bags/queue_E_grouplayer_on_t0*/data bags/queue_E_grouplayer_off_t0*/data
+Per-trial values: analysis/queue_E_grouplayer_results.csv
+
+queue_E_grouplayer_on  (n=3)
+  metric                 mean       sd      min      max
+  min_distance          1.129    0.009    1.121    1.139
+  path_length          10.720    0.081   10.627   10.771
+  path_ratio            1.265    0.010    1.255    1.274
+  max_lateral_dev       2.530    0.023    2.507    2.554
+  commit_dist           4.375    0.167    4.184    4.495
+  duration_s           42.322    3.792   39.483   46.629
+  mean_speed            0.255    0.021    0.231    0.273
+
+queue_E_grouplayer_off  (n=3)
+  metric                 mean       sd      min      max
+  min_distance          0.528    0.031    0.509    0.564
+  path_length           9.034    0.100    8.930    9.130
+  path_ratio            1.078    0.007    1.071    1.084
+  max_lateral_dev       0.723    0.018    0.703    0.734
+  commit_dist           1.987    0.044    1.948    2.035
+  duration_s           35.119    6.191   31.047   42.243
+  mean_speed            0.262    0.045    0.211    0.294

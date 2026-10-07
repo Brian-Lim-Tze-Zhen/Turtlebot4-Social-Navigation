@@ -1,0 +1,5 @@
+headon_F_corridor_trial1: plans 58, largest bend 0.92 m
+headon_F_corridor_trial2: plans 57, largest bend 0.87 m
+headon_F_corridor_trial3: plans 57, largest bend 0.92 m
+headon_F_corridor_trial4: plans 51, largest bend 0.83 m
+headon_F_corridor_trial5: plans 60, largest bend 0.83 m

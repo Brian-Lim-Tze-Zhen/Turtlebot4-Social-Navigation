@@ -1,0 +1,17 @@
+plan_side_check.py, run 7 Oct 2026 (definition in the script header: plans published while the walker is 2 m or more ahead; side read at the x of the walker; tolerance 0.15 m)
+
+== without the keep-side block: headon_hwreq_confirm_trial1..5 (Table 7.4, corridor without block)
+headon_hwreq_confirm_trial1: wrong side (+y) 13, right (-y) 12, centre 12
+headon_hwreq_confirm_trial2: wrong side (+y) 12, right (-y) 11, centre 15
+headon_hwreq_confirm_trial3: wrong side (+y) 10, right (-y) 12, centre 13
+headon_hwreq_confirm_trial4: wrong side (+y) 9, right (-y) 13, centre 16
+headon_hwreq_confirm_trial5: wrong side (+y) 14, right (-y) 7, centre 16
+TOTAL plans 185: wrong side 58 (31.4 %), right 55, centre 72
+
+== with lane rules and block: headon_hwreq_z5_corr_trial1..5 (Table 7.3)
+headon_hwreq_z5_corr_trial1: wrong side (+y) 4, right (-y) 22, centre 14
+headon_hwreq_z5_corr_trial2: wrong side (+y) 0, right (-y) 23, centre 14
+headon_hwreq_z5_corr_trial3: wrong side (+y) 0, right (-y) 23, centre 15
+headon_hwreq_z5_corr_trial4: wrong side (+y) 0, right (-y) 20, centre 16
+headon_hwreq_z5_corr_trial5: wrong side (+y) 1, right (-y) 21, centre 14
+TOTAL plans 187: wrong side 5 (2.7 %), right 109, centre 73

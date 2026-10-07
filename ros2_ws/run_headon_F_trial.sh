@@ -184,7 +184,7 @@ wait_active() {   # wait_active <lifecycle node> <seconds>
   # a count of 120 once stretched a failed bringup to over 6 minutes.
   local deadline=$((SECONDS + $2))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    state=$(timeout 10 ros2 lifecycle get "$1" 2>/dev/null | awk '{print $1}')
+    state=$(timeout -k 2 10 ros2 lifecycle get "$1" 2>/dev/null | awk '{print $1}')
     [ "$state" = "active" ] && { echo "[headon_F] $1 is active."; return 0; }
     sleep 1
   done
@@ -338,7 +338,7 @@ fi
 echo "[headon_F] Waiting for the perception pipeline..."
 READY=false
 for i in $(seq 1 90); do
-  if timeout 3 ros2 topic echo /predicted_person_cloud --once > /dev/null 2>&1 \
+  if timeout -k 2 3 ros2 topic echo /predicted_person_cloud --once > /dev/null 2>&1 \
      && [ "$(ros2 topic info /person_positions_map 2>/dev/null | awk '/Publisher count/ {print $3}')" = "1" ] \
      && [ "$(ros2 topic info /camera_ray_clusters 2>/dev/null | awk '/Publisher count/ {print $3}')" = "1" ] \
      && [ "$(ros2 topic info /person_positions_fused 2>/dev/null | awk '/Publisher count/ {print $3}')" = "1" ] \

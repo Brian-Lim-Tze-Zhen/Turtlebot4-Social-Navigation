@@ -63,6 +63,8 @@ SPAWN_X=-1.0; SPAWN_Y=0.0; SPAWN_YAW=3.14159
 GOAL_X="${GOAL_X:-6.0}"; GOAL_Y="${GOAL_Y:-0.0}"
 GOAL_TIMEOUT="${GOAL_TIMEOUT:-180}"              # wall seconds
 CLASS_TIMEOUT="${CLASS_TIMEOUT:-120}"            # wall seconds to see the expected class
+PAIR_MAX_SEP="${PAIR_MAX_SEP:-1.8}"              # m; the detector's CONV_MAX_DIST (a wider estimated pair is never a group)
+SEP_GIVEUP="${SEP_GIVEUP:-20}"                   # wall seconds of a wider estimated pair before the wait is given up
 RVIZ="${RVIZ:-false}"; HEADLESS="${HEADLESS:-true}"
 SHOW_RVIZ="${SHOW_RVIZ:-false}"
 
@@ -109,7 +111,7 @@ start() {   # start <log name> <command...>
 wait_active() {   # wait_active <lifecycle node> <seconds>
   local deadline=$((SECONDS + $2))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    state=$(timeout 10 ros2 lifecycle get "$1" 2>/dev/null | awk '{print $1}')
+    state=$(timeout -k 2 10 ros2 lifecycle get "$1" 2>/dev/null | awk '{print $1}')
     [ "$state" = "active" ] && { echo "[conv_F] $1 is active."; return 0; }
     sleep 1
   done
@@ -217,10 +219,11 @@ start group_detector python3 "$CL/social_group_detector_node_lidarhold_sim.py" -
 # ----------------------------------------------------------------
 echo "[conv_F] Waiting for /social_groups to report a $CASE group..."
 CLASS_OK=false
+SEP_BAD=0
 deadline=$((SECONDS + CLASS_TIMEOUT))
 while [ "$SECONDS" -lt "$deadline" ]; do
   # NB: no `ros2 topic echo --field data`: it prints the string YAML-quoted.
-  line=$(timeout 5 ros2 topic echo /social_groups std_msgs/msg/String --once 2>/dev/null \
+  line=$(timeout -k 2 5 ros2 topic echo /social_groups std_msgs/msg/String --once 2>/dev/null \
            | sed -n 's/^data: *//p' | tr -d "'\"" | head -1)
   buf=$(echo "$line" | awk -F, 'NF >= 11 {print $11}')
   # Only a facing pair counts: the detector publishes it as "conversation"
@@ -235,6 +238,26 @@ while [ "$SECONDS" -lt "$deadline" ]; do
        || { [ "$CASE" = narrow ] && awk "BEGIN{exit !($buf < 0.39)}"; }; then
       CLASS_OK=true
       break
+    fi
+  fi
+  # Guard: with the two tracks estimated farther apart than PAIR_MAX_SEP the
+  # detector never forms a group and this wait would run to CLASS_TIMEOUT. It
+  # happened with RViz on and an overloaded machine (AMCL dropping scans): one
+  # track was fixed 2.0 m from the other for the whole run.
+  if [ "$CASE" != queue ]; then
+    sep=$(tail -n 400 "$LOG_DIR/perception.log" 2>/dev/null | grep 'human_kf_predictor\]: id:' \
+      | sed -E 's/.*id:([0-9]+) pos=\(([-0-9.]+),([-0-9.]+)\).*/\1 \2 \3/' \
+      | awk '{x[$1]=$2; y[$1]=$3; l[$1]=NR}
+             END{a=-1;b=-1;for(i in l){if(a<0||l[i]>l[a]){b=a;a=i}else if(b<0||l[i]>l[b]){b=i}}
+                 if(a>=0&&b>=0){dx=x[a]-x[b];dy=y[a]-y[b];printf "%.2f",sqrt(dx*dx+dy*dy)}}')
+    if [ -n "$sep" ] && awk "BEGIN{exit !($sep > $PAIR_MAX_SEP)}"; then
+      SEP_BAD=$((SEP_BAD + 1))
+    else
+      SEP_BAD=0
+    fi
+    if [ "$SEP_BAD" -ge "$SEP_GIVEUP" ]; then
+      echo "ERROR: the two tracks are estimated $sep m apart (more than $PAIR_MAX_SEP m) for $SEP_GIVEUP s, so no group can form. Localisation or tracking problem (machine overloaded? RViz on?) - see $LOG_DIR/perception.log" >&2
+      exit 1
     fi
   fi
   sleep 1

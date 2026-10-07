@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <deque>
 #include <utility>
 #include <vector>
 
@@ -374,6 +375,22 @@ private:
   double lane_group_match_radius_{0.0};   // m
   double lane_group_hold_s_{0.0};         // s
   std::unordered_map<int, double> group_member_until_;   // track id -> time (s) until which it counts as a member
+  // Sustained approach (lane_approach_window_s_ > 0). A lane is started only
+  // when the person has come at least lane_approach_min_move_ closer to the
+  // robot within the last lane_approach_window_s_ seconds, and at least the
+  // fraction lane_approach_consistency_ of the steps in that window point
+  // towards the robot. A single velocity sample above pass_side_min_closing_
+  // is not enough: the position estimate of a standing person can jump by
+  // 0.3 to 0.5 m in one step, and the Kalman filter turned such a jump into
+  // 0.4 to 0.55 m/s, which started a lane for a member of a standing pair
+  // (bags conv_F_final_narrow_trial2, conv_F_gs2_narrow_trial1 and _2).
+  // A walker at 1.2 m/s covers 1.2 m in 1 s in a consistent direction.
+  float lane_approach_window_s_{0.0f};       // s; 0 = off (old behaviour)
+  float lane_approach_min_move_{0.5f};       // m
+  float lane_approach_consistency_{0.6f};    // share of steps towards the robot
+  struct ApproachSample { double t; float x; float y; };
+  std::unordered_map<int, std::deque<ApproachSample>> approach_hist_;
+  bool approachConfirmed(int track_id, float ux, float uy) const;
   double lane_timeout_{3.0};            // s without the track before forgetting
   float pass_side_min_closing_{0.5f};   // m/s toward the robot
 
