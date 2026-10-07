@@ -1,0 +1,27 @@
+Version 3 critic (group skip, radius 1.0 m, hold 10 s), hash 39668060, batch of 7 Oct 2026
+#### narrow
+conv_F_gs3_narrow_trial1: reached=True time=20.8s stopped=0.0s min_centre=0.692 min_surface=+0.253  [person_1 0.692, person_2 0.804]
+conv_F_gs3_narrow_trial2_a2: reached=True time=21.3s stopped=0.0s min_centre=0.685 min_surface=+0.246  [person_1 0.685, person_2 0.815]
+conv_F_gs3_narrow_trial3: reached=True time=21.3s stopped=0.0s min_centre=0.688 min_surface=+0.249  [person_1 0.688, person_2 0.810]
+conv_F_gs3_narrow_trial4: reached=True time=21.3s stopped=0.0s min_centre=0.702 min_surface=+0.263  [person_1 0.702, person_2 0.792]
+conv_F_gs3_narrow_trial5: reached=True time=21.5s stopped=0.0s min_centre=0.695 min_surface=+0.256  [person_1 0.695, person_2 0.805]
+conv_F_gs3_narrow_trial6_a2: reached=True time=21.4s stopped=0.0s min_centre=0.692 min_surface=+0.253  [person_1 0.692, person_2 0.799]
+
+reached goal: 6/6
+min_centre_m   0.692 +/- 0.006 (n=6)
+min_surface_m  0.253 +/- 0.006 (n=6)
+time_s         21.273 +/- 0.250 (n=6)
+stopped_s      0.000 +/- 0.000 (n=6)
+#### wide
+conv_F_gs3_wide_trial1: reached=True time=25.8s stopped=0.0s min_centre=0.993 min_surface=+0.554  [person_1 0.993, person_2 2.242]
+conv_F_gs3_wide_trial2: reached=True time=24.6s stopped=0.0s min_centre=0.845 min_surface=+0.406  [person_1 0.845, person_2 2.218]
+conv_F_gs3_wide_trial3: reached=True time=24.6s stopped=0.0s min_centre=0.831 min_surface=+0.392  [person_1 0.831, person_2 2.176]
+conv_F_gs3_wide_trial4: reached=True time=24.7s stopped=0.0s min_centre=0.895 min_surface=+0.456  [person_1 0.895, person_2 2.241]
+conv_F_gs3_wide_trial5: reached=True time=24.6s stopped=0.0s min_centre=0.886 min_surface=+0.447  [person_1 0.886, person_2 2.219]
+conv_F_gs3_wide_trial6: reached=True time=24.7s stopped=0.0s min_centre=0.867 min_surface=+0.428  [person_1 0.867, person_2 2.193]
+
+reached goal: 6/6
+min_centre_m   0.886 +/- 0.058 (n=6)
+min_surface_m  0.447 +/- 0.058 (n=6)
+time_s         24.837 +/- 0.491 (n=6)
+stopped_s      0.000 +/- 0.000 (n=6)

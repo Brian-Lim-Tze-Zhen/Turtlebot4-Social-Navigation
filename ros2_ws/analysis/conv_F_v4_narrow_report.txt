@@ -1,0 +1,13 @@
+Version 4 critic (sustained approach, no group skip), batch of 7 Oct 2026
+conv_F_v4_narrow_trial1: reached=True time=21.3s stopped=0.0s min_centre=0.733 min_surface=+0.294  [person_1 0.733, person_2 0.766]
+conv_F_v4_narrow_trial2: reached=True time=21.3s stopped=0.0s min_centre=0.674 min_surface=+0.235  [person_1 0.674, person_2 0.824]
+conv_F_v4_narrow_trial3: reached=True time=21.4s stopped=0.0s min_centre=0.685 min_surface=+0.246  [person_1 0.685, person_2 0.814]
+conv_F_v4_narrow_trial4: reached=True time=21.3s stopped=0.0s min_centre=0.674 min_surface=+0.235  [person_1 0.674, person_2 0.826]
+conv_F_v4_narrow_trial5: reached=True time=21.3s stopped=0.0s min_centre=0.681 min_surface=+0.242  [person_1 0.681, person_2 0.819]
+conv_F_v4_narrow_trial6: reached=True time=21.5s stopped=0.0s min_centre=0.689 min_surface=+0.250  [person_1 0.689, person_2 0.811]
+
+reached goal: 6/6
+min_centre_m   0.689 +/- 0.022 (n=6)
+min_surface_m  0.250 +/- 0.022 (n=6)
+time_s         21.363 +/- 0.086 (n=6)
+stopped_s      0.000 +/- 0.000 (n=6)
