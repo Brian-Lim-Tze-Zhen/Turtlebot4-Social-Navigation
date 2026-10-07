@@ -1,0 +1,27 @@
+v4 without watch-first, narrow
+conv_F_v4nw_narrow_trial1: reached=True time=43.1s stopped=4.2s min_centre=0.556 min_surface=+0.117  [person_1 0.911, person_2 0.556]
+conv_F_v4nw_narrow_trial2: reached=True time=23.8s stopped=0.0s min_centre=0.748 min_surface=+0.309  [person_1 0.752, person_2 0.748]
+conv_F_v4nw_narrow_trial3: reached=True time=28.8s stopped=0.3s min_centre=0.741 min_surface=+0.302  [person_1 0.759, person_2 0.741]
+conv_F_v4nw_narrow_trial4: reached=True time=23.1s stopped=0.0s min_centre=0.674 min_surface=+0.235  [person_1 0.674, person_2 0.826]
+conv_F_v4nw_narrow_trial5: reached=True time=22.6s stopped=0.0s min_centre=0.720 min_surface=+0.281  [person_1 0.720, person_2 0.776]
+conv_F_v4nw_narrow_trial6: reached=True time=25.2s stopped=0.0s min_centre=0.670 min_surface=+0.231  [person_1 0.830, person_2 0.670]
+
+reached goal: 6/6
+min_centre_m   0.685 +/- 0.071 (n=6)
+min_surface_m  0.246 +/- 0.071 (n=6)
+time_s         27.756 +/- 7.815 (n=6)
+stopped_s      0.741 +/- 1.695 (n=6)
+
+v4, wide
+conv_F_v4_wide_trial1: reached=True time=25.7s stopped=0.0s min_centre=0.908 min_surface=+0.469  [person_1 2.184, person_2 0.908]
+conv_F_v4_wide_trial2: reached=True time=24.8s stopped=0.0s min_centre=0.909 min_surface=+0.470  [person_1 0.909, person_2 2.280]
+conv_F_v4_wide_trial3: reached=True time=24.3s stopped=0.0s min_centre=0.806 min_surface=+0.367  [person_1 0.806, person_2 2.157]
+conv_F_v4_wide_trial4: reached=True time=24.7s stopped=0.0s min_centre=0.867 min_surface=+0.428  [person_1 0.867, person_2 2.177]
+conv_F_v4_wide_trial5: reached=True time=24.4s stopped=0.0s min_centre=0.821 min_surface=+0.382  [person_1 0.821, person_2 2.206]
+conv_F_v4_wide_trial6: reached=True time=24.8s stopped=0.0s min_centre=0.910 min_surface=+0.471  [person_1 0.910, person_2 2.234]
+
+reached goal: 6/6
+min_centre_m   0.870 +/- 0.047 (n=6)
+min_surface_m  0.431 +/- 0.047 (n=6)
+time_s         24.798 +/- 0.469 (n=6)
+stopped_s      0.000 +/- 0.000 (n=6)
