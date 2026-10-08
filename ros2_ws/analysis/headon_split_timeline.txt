@@ -1,0 +1,50 @@
+headon_sidegoal_corr_trial1_a2: closest 0.732 m at sim t 67.46
+  event  -4.23 s  SocialCritic: lane rule now follows track 0 (6.06 m ahead), robot keeps LEFT
+  event  -3.62 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset -0.00 m over 22 samples)
+  event  -0.26 s  Pruned stale track id:0
+  event  +0.64 s  Pruned stale track id:0 from obstacle cloud
+headon_sidegoal_corr_trial2: closest 0.683 m at sim t 60.39
+  event  -4.06 s  SocialCritic: lane rule now follows track 0 (5.76 m ahead), robot keeps RIGHT
+  event  -3.45 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.14 m over 21 samples)
+  event  -0.19 s  Pruned stale track id:0
+  event  +0.62 s  Pruned stale track id:0 from obstacle cloud
+headon_sidegoal_corr_trial3: closest 0.745 m at sim t 70.45
+  event  -3.95 s  SocialCritic: lane rule now follows track 0 (5.81 m ahead), robot keeps RIGHT
+  event  -3.34 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.05 m over 23 samples)
+  event  -0.25 s  Pruned stale track id:0
+  event  +0.65 s  Pruned stale track id:0 from obstacle cloud
+headon_sidegoal_corr_trial4: closest 0.740 m at sim t 52.94
+  event  -4.15 s  SocialCritic: lane rule now follows track 0 (5.89 m ahead), robot keeps RIGHT
+  event  -3.53 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.28 m over 24 samples)
+  event  -0.73 s  Pruned stale track id:0
+  event  +0.16 s  Pruned stale track id:0 from obstacle cloud
+headon_sidegoal_corr_trial5: closest 0.659 m at sim t 55.15
+  event  -3.91 s  SocialCritic: lane rule now follows track 0 (5.58 m ahead), robot keeps RIGHT
+  event  -3.29 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.01 m over 21 samples)
+  event  -0.35 s  Pruned stale track id:0
+  event  +0.45 s  Pruned stale track id:0 from obstacle cloud
+headon_noghost_corr_trial1: closest 0.751 m at sim t 63.90
+  event  -4.10 s  SocialCritic: lane rule now follows track 0 (6.00 m ahead), robot keeps RIGHT
+  event  -3.49 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.13 m over 22 samples)
+  event  -0.70 s  Pruned stale track id:0
+  event  +0.10 s  Pruned stale track id:0 from obstacle cloud
+headon_noghost_corr_trial2: closest 0.727 m at sim t 55.21
+  event  -4.18 s  SocialCritic: lane rule now follows track 0 (6.01 m ahead), robot keeps LEFT
+  event  -3.55 s  SocialCritic: track 0 pass side fixed: robot keeps LEFT (walker's mean offset -1.09 m over 22 samples)
+  event  -0.40 s  Pruned stale track id:0
+  event  +0.40 s  Pruned stale track id:0 from obstacle cloud
+headon_noghost_corr_trial3: closest 0.804 m at sim t 63.07
+  event  -4.25 s  SocialCritic: lane rule now follows track 0 (6.00 m ahead), robot keeps RIGHT
+  event  -3.64 s  SocialCritic: track 0 pass side fixed: robot keeps RIGHT (walker's mean offset +0.00 m over 22 samples)
+  event  -0.47 s  NOGHOST: dropped id:0 - coasting 1.2 s, coasted position 0.76 m from the robot
+  event  +0.33 s  Pruned stale track id:0 from obstacle cloud
+headon_noghost_corr_trial4: closest 0.647 m at sim t 51.89
+  event  -3.88 s  SocialCritic: lane rule now follows track 0 (5.59 m ahead), robot keeps LEFT
+  event  -3.28 s  SocialCritic: track 0 pass side fixed: robot keeps LEFT (walker's mean offset -0.80 m over 21 samples)
+  event  -0.49 s  Pruned stale track id:0
+  event  +0.41 s  Pruned stale track id:0 from obstacle cloud
+headon_noghost_corr_trial5: closest 0.631 m at sim t 59.62
+  event  -4.21 s  SocialCritic: lane rule now follows track 0 (5.94 m ahead), robot keeps LEFT
+  event  -3.58 s  SocialCritic: track 0 pass side fixed: robot keeps LEFT (walker's mean offset -0.89 m over 23 samples)
+  event  -0.41 s  NOGHOST: dropped id:0 - coasting 1.1 s, coasted position 0.95 m from the robot
+  event  +0.49 s  Pruned stale track id:0 from obstacle cloud

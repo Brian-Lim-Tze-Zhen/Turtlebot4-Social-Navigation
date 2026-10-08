@@ -120,6 +120,18 @@ BLOCKED_HOLD="${BLOCKED_HOLD:-false}"
 PERSON_START_DELAY="${PERSON_START_DELAY:-}"
 # Person cloud lane half-width and body disk radius; defaults = hardware.
 LANE_B="${LANE_B:-0.4}"; DISK_R="${DISK_R:-0.4}"
+# HW SYNC (8 Oct 2026): a *hwsync* config runs the robot's predictor, which drops a
+# coasting track that runs into the robot (human_kf_predictor_lidar_noghost.py).
+case "$(basename "$CFG")" in
+  *hwsync*) KF_SCRIPT="${KF_SCRIPT:-human_kf_predictor_lidar_noghost.py}"
+            BLOCKED_BEEP_SCRIPT="${BLOCKED_BEEP_SCRIPT:-blocked_person_beep_node_front_sim.py}"
+            RETRY_SCRIPT="${RETRY_SCRIPT:-beep_retry_node_hwsync_sim.py}" ;;
+esac
+KF_SCRIPT="${KF_SCRIPT:-human_kf_predictor_lidar.py}"
+# ... and the robot's front-cone blocked-person node (person within 1.0 m AND +/-30 deg ahead, 1 s memory).
+BLOCKED_BEEP_SCRIPT="${BLOCKED_BEEP_SCRIPT:-blocked_person_beep_node_sim.py}"
+# ... and the robot's retry node (retry wait 3 s, wall-trap reverse only with a front LiDAR return).
+RETRY_SCRIPT="${RETRY_SCRIPT:-beep_retry_node_sim.py}"
 
 # TEST TOOL: TRACK_DROPOUT_AT=<m> makes the SocialCritic lose the person's
 # track at that distance for TRACK_DROPOUT_S seconds and get it back under a
@@ -314,7 +326,7 @@ start perception ros2 launch "$WS/launch/perception_camray_bringup_sim.launch.py
   coast_timeout:="$COAST_TIMEOUT" ray_coast:="$RAY_COAST" ray_coast_s:="$RAY_COAST_S" \
   yolo_imgsz:="$YOLO_IMGSZ" yolo_min_conf:="$YOLO_MIN_CONF" max_person_range:="$MAX_PERSON_RANGE" \
   ellipse_a_slope:="$LANE_SLOPE" ellipse_a_max:="$LANE_MAX" pass_side_block_width:="$PASS_BLOCK" \
-  ellipse_b:="$LANE_B" person_disk_radius:="$DISK_R"
+  ellipse_b:="$LANE_B" person_disk_radius:="$DISK_R" kf_script:="$KF_SCRIPT"
 if [ -n "$TRACK_DROPOUT_AT" ]; then
   start dropout_relay python3 "$CL/track_dropout_relay_sim.py" --ros-args \
     -p use_sim_time:=true -p dropout_at_m:="$TRACK_DROPOUT_AT" -p dropout_s:="$TRACK_DROPOUT_S"
@@ -325,9 +337,9 @@ if [ "$STOP_BEEP" = "true" ]; then
   start stop_beep python3 "$CL/person_stop_beep_node_sim.py" --ros-args -p use_sim_time:=true
 fi
 if [ "$BLOCKED_BEEP" = "true" ]; then
-  start blocked_beep python3 "$CL/blocked_person_beep_node_sim.py" --ros-args -p use_sim_time:=true \
+  start blocked_beep python3 "$CL/$BLOCKED_BEEP_SCRIPT" --ros-args -p use_sim_time:=true \
     -p hold:="$BLOCKED_HOLD"
-  start beep_retry python3 "$CL/beep_retry_node_sim.py" --ros-args -p use_sim_time:=true
+  start beep_retry python3 "$CL/$RETRY_SCRIPT" --ros-args -p use_sim_time:=true
 fi
 
 # ----------------------------------------------------------------
@@ -360,15 +372,15 @@ cp "$CFG" "$BAG/config_used.yaml"
 cp "$CL/yolo_leg_detector_lidar_sim.py" "$BAG/yolo_used.py"
 cp "$CL/camera_ray_person_node_sim.py" "$BAG/ray_person_used.py"
 cp "$CL/camera_ray_identity_node_sim.py" "$BAG/ray_identity_used.py"
-cp "$CL/human_kf_predictor_lidar.py" "$BAG/kf_used.py"
+cp "$CL/$KF_SCRIPT" "$BAG/kf_used.py"
 cp "$CL/predicted_person_cloud_node_lidar.py" "$BAG/cloud_node_used.py"
 cp "$CL/social_zone_costmap_node_sim.py" "$BAG/zone_node_used.py"
 cp "$CL/social_group_detector_node_lidarhold_sim.py" "$BAG/detector_used.py"
 cp "$MOVER" "$BAG/mover_used.py"
 [ "$STOP_BEEP" = "true" ] && cp "$CL/person_stop_beep_node_sim.py" "$BAG/stop_beep_used.py"
 if [ "$BLOCKED_BEEP" = "true" ]; then
-  cp "$CL/blocked_person_beep_node_sim.py" "$BAG/blocked_beep_used.py"
-  cp "$CL/beep_retry_node_sim.py" "$BAG/beep_retry_used.py"
+  cp "$CL/$BLOCKED_BEEP_SCRIPT" "$BAG/blocked_beep_used.py"
+  cp "$CL/$RETRY_SCRIPT" "$BAG/beep_retry_used.py"
 fi
 cp "$WS/launch/perception_camray_bringup_sim.launch.py" "$BAG/launch_used.py"
 cp "$WS/src/social_critic/src/social_critic.cpp" "$BAG/social_critic_used.cpp"
@@ -391,10 +403,10 @@ Map: $MAP
 Robot spawn: ($SPAWN_X, $SPAWN_Y, yaw $SPAWN_YAW) on the dock, then undock   Goal: ($GOAL_X, $GOAL_Y)
 Person: ($PERSON_X0, $PERSON_Y) -> ($PERSON_X1, $PERSON_Y) at $PERSON_SPEED m/s, one-way
 Person 2: ${PERSON2_Y:+($PERSON2_X0, $PERSON2_Y) -> ($PERSON2_X1, $PERSON2_Y) at $PERSON2_SPEED m/s}${PERSON2_Y:+ }$([ -z "$PERSON2_Y" ] && echo none)
-Perception: coast_timeout $COAST_TIMEOUT, ray_coast $RAY_COAST ($RAY_COAST_S s), yolo imgsz $YOLO_IMGSZ, min conf $YOLO_MIN_CONF, max person range $MAX_PERSON_RANGE, lane slope $LANE_SLOPE max $LANE_MAX, pass-side block $PASS_BLOCK, lane half-width $LANE_B, disk radius $DISK_R
+Perception: coast_timeout $COAST_TIMEOUT, ray_coast $RAY_COAST ($RAY_COAST_S s), yolo imgsz $YOLO_IMGSZ, min conf $YOLO_MIN_CONF, max person range $MAX_PERSON_RANGE, lane slope $LANE_SLOPE max $LANE_MAX, pass-side block $PASS_BLOCK, lane half-width $LANE_B, disk radius $DISK_R, predictor $KF_SCRIPT
 Track dropout test: at "${TRACK_DROPOUT_AT:-off}" m for $TRACK_DROPOUT_S s
 Stop-and-beep node: $STOP_BEEP
-Blocked-person beep + beep-retry nodes: $BLOCKED_BEEP (hold $BLOCKED_HOLD)   Person start delay: ${PERSON_START_DELAY:-default} s
+Blocked-person beep + beep-retry nodes: $BLOCKED_BEEP (hold $BLOCKED_HOLD, $BLOCKED_BEEP_SCRIPT, $RETRY_SCRIPT)   Person start delay: ${PERSON_START_DELAY:-default} s
 NOTES
 
 echo "[headon_F] Recording to $BAG/data ..."

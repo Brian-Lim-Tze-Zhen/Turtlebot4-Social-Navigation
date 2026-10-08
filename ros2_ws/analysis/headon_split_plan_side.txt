@@ -1,0 +1,11 @@
+headon_sidegoal_corr_trial1_a2: wrong side (+y) 6, right (-y) 20, centre 15
+headon_sidegoal_corr_trial2: wrong side (+y) 7, right (-y) 18, centre 16
+headon_sidegoal_corr_trial3: wrong side (+y) 2, right (-y) 23, centre 17
+headon_sidegoal_corr_trial4: wrong side (+y) 1, right (-y) 25, centre 16
+headon_sidegoal_corr_trial5: wrong side (+y) 1, right (-y) 23, centre 14
+headon_noghost_corr_trial1: wrong side (+y) 3, right (-y) 23, centre 16
+headon_noghost_corr_trial2: wrong side (+y) 26, right (-y) 1, centre 16
+headon_noghost_corr_trial3: wrong side (+y) 12, right (-y) 15, centre 15
+headon_noghost_corr_trial4: wrong side (+y) 24, right (-y) 0, centre 15
+headon_noghost_corr_trial5: wrong side (+y) 21, right (-y) 5, centre 16
+TOTAL plans 412: wrong side 103 (25.0 %), right 153, centre 156

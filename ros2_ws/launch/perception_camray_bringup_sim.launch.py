@@ -27,6 +27,7 @@ def generate_launch_description():
     ray_coast_s = LaunchConfiguration("ray_coast_s")
     lane_b = LaunchConfiguration("ellipse_b")
     disk_r = LaunchConfiguration("person_disk_radius")
+    kf_script = LaunchConfiguration("kf_script")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
@@ -42,6 +43,9 @@ def generate_launch_description():
         DeclareLaunchArgument("ray_coast_s", default_value="1.5"),
         DeclareLaunchArgument("ellipse_b", default_value="0.4"),
         DeclareLaunchArgument("person_disk_radius", default_value="0.4"),
+        # HW SYNC (8 Oct 2026): human_kf_predictor_lidar_noghost.py for the *hwsync*
+        # configs (as on the robot); the default keeps the predictor of all earlier runs.
+        DeclareLaunchArgument("kf_script", default_value="human_kf_predictor_lidar.py"),
         ExecuteProcess(
             cmd=["python3", f"{WS}/src/social_perception/social_perception/camera_lidar/yolo_leg_detector_lidar_sim.py",
                  "--ros-args", "-p", ["use_sim_time:=", simtime],
@@ -73,7 +77,7 @@ def generate_launch_description():
                  "-p", "output_topic:=/person_markers"],
             name="person_marker_publisher", output="screen"),
         ExecuteProcess(
-            cmd=["python3", f"{WS}/src/social_perception/social_perception/camera_lidar/human_kf_predictor_lidar.py",
+            cmd=["python3", [f"{WS}/src/social_perception/social_perception/camera_lidar/", kf_script],
                  "--ros-args", "-p", ["use_sim_time:=", simtime],
                  "-p", ["coast_timeout:=", coast]],
             name="human_kf_predictor_lidar", output="screen"),

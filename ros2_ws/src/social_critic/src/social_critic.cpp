@@ -85,6 +85,7 @@ void SocialCritic::initialize()
   getParam(lane_approach_window_s_, "lane_approach_window_s", 0.0f);
   getParam(lane_approach_min_move_, "lane_approach_min_move", 0.5f);
   getParam(lane_approach_consistency_, "lane_approach_consistency", 0.6f);
+  getParam(side_ref_goal_, "side_ref_goal", false);
 
   // Reuse the costmap's TF buffer rather than starting a second
   // listener inside controller_server.
@@ -153,6 +154,9 @@ void SocialCritic::initialize()
     logger_, "SocialCritic: lane needs a sustained approach: %s (%.2f m within %.2f s, %.0f %% of the steps towards the robot)",
     lane_approach_window_s_ > 0.0f ? "on" : "off", lane_approach_min_move_, lane_approach_window_s_,
     100.0f * lane_approach_consistency_);
+  RCLCPP_INFO(
+    logger_, "SocialCritic: pass side measured against the %s",
+    side_ref_goal_ ? "robot-goal line (side_ref_goal)" : "start of the global path");
 }
 
 // /social_groups, from social_group_detector_node_lidarhold_sim.py:
@@ -596,6 +600,16 @@ void SocialCritic::score(CriticData & data)
           trav_y = qy / ql;
           break;
         }
+      }
+    }
+    // HW SYNC: straight line to the goal instead (see side_ref_goal_).
+    if (side_ref_goal_) {
+      const float qx = static_cast<float>(data.goal.position.x) - robot_x0;
+      const float qy = static_cast<float>(data.goal.position.y) - robot_y0;
+      const float ql = std::sqrt(qx * qx + qy * qy);
+      if (ql >= 1.0f) {
+        trav_x = qx / ql;
+        trav_y = qy / ql;
       }
     }
     auto newLane = [&](const Target & t, bool provisional) {

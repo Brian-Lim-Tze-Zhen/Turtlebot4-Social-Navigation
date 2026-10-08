@@ -1,0 +1,11 @@
+headon_hwsync_corr_trial1: wrong side (+y) 23, right (-y) 3, centre 15
+headon_hwsync_corr_trial2: wrong side (+y) 3, right (-y) 21, centre 17
+headon_hwsync_corr_trial3: wrong side (+y) 12, right (-y) 12, centre 16
+headon_hwsync_corr_trial4: wrong side (+y) 17, right (-y) 10, centre 15
+headon_hwsync_corr_trial5: wrong side (+y) 25, right (-y) 0, centre 13
+headon_v4_corr_trial1: wrong side (+y) 15, right (-y) 10, centre 14
+headon_v4_corr_trial2: wrong side (+y) 5, right (-y) 21, centre 14
+headon_v4_corr_trial3: wrong side (+y) 1, right (-y) 24, centre 14
+headon_v4_corr_trial4: wrong side (+y) 1, right (-y) 24, centre 13
+headon_v4_corr_trial5: wrong side (+y) 1, right (-y) 23, centre 14
+TOTAL plans 396: wrong side 103 (26.0 %), right 148, centre 145

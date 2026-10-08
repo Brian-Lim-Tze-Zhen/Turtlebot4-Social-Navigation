@@ -388,6 +388,14 @@ private:
   float lane_approach_window_s_{0.0f};       // s; 0 = off (old behaviour)
   float lane_approach_min_move_{0.5f};       // m
   float lane_approach_consistency_{0.6f};    // share of steps towards the robot
+  // HW SYNC (8 Oct 2026), simulation version of the hardware critic's
+  // side_ref_goal_topic: the walker's sideways offset for the pass side is
+  // measured against the straight robot-goal line (data.goal) instead of
+  // the first metre of the global path. On the robot the global path had
+  // already bent around the walker (person cloud in the global costmap) when
+  // the side was decided: a walker 0.0-0.3 m off the line read 0.5-0.8 m off
+  // (bag headon_laneconfirm_run01_20261005_095043). Default off.
+  bool side_ref_goal_{false};
   struct ApproachSample { double t; float x; float y; };
   std::unordered_map<int, std::deque<ApproachSample>> approach_hist_;
   bool approachConfirmed(int track_id, float ux, float uy) const;
